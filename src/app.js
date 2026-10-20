@@ -8,18 +8,20 @@ import { importFiles, importSummary } from './core/importer.js';
 import { buildProjectBlob, exportGLB, exportPNG, exportVideo, loadProjectFile, openExportDialog, saveProject } from './core/exporter.js';
 import { Topbar } from './ui/topbar.js';
 import { Toolrail } from './ui/toolrail.js';
+import { MobileBar } from './ui/mobilebar.js';
 import { Inspector } from './ui/inspector.js';
 import { Timeline } from './ui/timeline.js';
 import { confirmDialog, openAboutModal, openHelpModal, showModal, toast } from './ui/ui.js';
 import { icon } from './icons.js';
-import { baseName, clamp, deepClone, fileExt, formatTimecode, snapTime, uid } from './utils.js';
+import { baseName, clamp, deepClone, escapeHtml, fileExt, formatTimecode, h, snapTime, uid } from './utils.js';
 
 const PALETTE = ['#f5c542', '#5aa2ff', '#5ad68c', '#b18cff', '#ff9f5a', '#54d6d6', '#ff7bb0', '#9bb7ff'];
 const TYPE_ICON = { mesh: 'cube', model: 'layers', group: 'folder', light: 'light', camera: 'camera', audio: 'audio' };
 
 export class App {
-  constructor(root) {
+  constructor(root, options = {}) {
     this.root = root;
+    this.mobile = !!options.mobile;
     this.objects = new Map();
     this.entries = [];
     this.entryCounter = 0;
@@ -57,6 +59,9 @@ export class App {
     this.toolrail = new Toolrail(this, document.getElementById('toolrail'));
     this.inspector = new Inspector(this, document.getElementById('inspector'));
     this.timeline = new Timeline(this, document.getElementById('timeline'));
+
+    document.body.classList.toggle('is-mobile', this.mobile);
+    if (this.mobile) this.mobileBar = new MobileBar(this, this.root);
 
     this.bindFileInputs();
     this.bindShortcuts();
@@ -776,6 +781,7 @@ export class App {
     this.audio.play(this.currentTime);
     this.timeline?.setPlaying(true);
     this.topbar?.setPlaying(true);
+    this.mobileBar?.update();
   }
 
   pause() {
@@ -784,6 +790,7 @@ export class App {
     this.audio.stop();
     this.timeline?.setPlaying(false);
     this.topbar?.setPlaying(false);
+    this.mobileBar?.update();
   }
 
   stop() {
@@ -1559,11 +1566,83 @@ export class App {
     this.timeline?.render();
     this.viewport?.updateStats();
     this.viewport?.updateSelection(this.selectedEntry);
+    this.mobileBar?.update();
     this.scheduleAutosave(2600);
   }
 
   refreshUI() {
     this.refreshAll();
+  }
+
+  /* ============================================================
+     Interfaz móvil (teléfonos / tablets)
+     ============================================================ */
+
+  /** Cambia entre la interfaz de escritorio y la de teléfono y recarga. */
+  toggleMobileMode() {
+    const nextMobile = !this.mobile;
+    try {
+      localStorage.setItem('pekita-mobile-view', nextMobile ? '1' : '0');
+    } catch {
+      /* almacenamiento no disponible */
+    }
+    const url = new URL(location.href);
+    url.searchParams.set(nextMobile ? 'mobile' : 'desktop', '1');
+    location.href = url.toString();
+  }
+
+  /** Abre o cierra la hoja inferior de propiedades. */
+  toggleMobileSheet() {
+    document.body.classList.toggle('sheet-open');
+    this.mobileBar?.update();
+  }
+
+  closeMobileSheet() {
+    document.body.classList.remove('sheet-open');
+    this.mobileBar?.update();
+  }
+
+  /** Pliega o despliega la línea de tiempo para dejar más vista 3D. */
+  toggleMobileTimeline() {
+    document.body.classList.toggle('timeline-collapsed');
+    this.timeline?.render();
+    this.mobileBar?.update();
+  }
+
+  /** Menú completo en una hoja, ya que en móvil la barra de menús no cabe. */
+  openMobileMenu() {
+    const menus = this.topbar?.menuData?.() || [];
+    const body = h('div', { class: 'mobile-menu' });
+    let modal = null;
+
+    for (const menu of menus) {
+      const items = (menu.items || []).filter((item) => !item.sep);
+      if (!items.length) continue;
+      body.appendChild(h('div', { class: 'mm-title', text: menu.label }));
+      const grid = h('div', { class: 'mm-grid' });
+      for (const item of items) {
+        grid.appendChild(
+          h('button', {
+            class: 'mm-item',
+            type: 'button',
+            html: `${icon(item.icon || 'cube', 18)}<span>${escapeHtml(item.label)}</span>`,
+            onClick: () => {
+              modal?.close();
+              item.action?.();
+            },
+          }),
+        );
+      }
+      body.appendChild(grid);
+    }
+
+    modal = showModal({
+      title: 'Menú',
+      body,
+      className: 'mobile-menu-modal',
+      actions: [{ label: 'Cerrar' }],
+    });
+    return modal;
   }
 
   /* ============================================================
