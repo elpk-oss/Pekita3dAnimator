@@ -17,10 +17,11 @@ Animador 3D en el navegador con viewport estilo Blender, timeline estilo CapCut,
 - **Autoguardado**: una copia completa del proyecto se guarda en IndexedDB y se restaura al recargar la página.
 - **Modelado rápido**: cubo, esfera, plano, cilindro, cono, toro, vacíos, luces direccional/puntual/foco/ambiental/hemisférica y cámaras.
 - **Modificadores**: alineación, array, espejo, suavizado, sombreado plano, wireframe y sombras.
-- **Importación**: GLB, glTF (+ `.bin` y texturas seleccionadas juntas), OBJ + MTL, FBX, STL, PLY, DAE, 3MF, `.bbmodel` de Blockbench y `.proj` / `.projy` (JSON compatible o ZIP con un modelo dentro).
+- **Importación**: GLB, glTF (+ `.bin` y texturas seleccionadas juntas), OBJ + MTL, FBX, STL, PLY, DAE, 3MF, `.bbmodel` de Blockbench, proyectos **Prisma 3D** (`.prism` / `.prisma`) y `.proj` / `.projy` (contenedor ZIP, JSON, GLB u OBJ incrustado).
 - **Exportación**: video 1920×1080 con audio (MP4 si el navegador lo soporta; WebM como respaldo), secuencia PNG en ZIP, GLB con animación y proyecto `.peki` (escena + fondo + claves + audio).
 - **Cámara de exportación**: al pulsar **Exportar** se abre una vista previa 16:9 con cámara libre, cámaras de la escena y presets (Centro, Centro lejos, Centro cerca, Centro abajo, Frontal, Superior e Isométrica).
 - **Interfaz oscura sencilla** pensada para 1920×1080, con acento amarillo y menos brillos.
+- **Versión móvil estilo app**: en teléfonos la interfaz se convierte en un editor táctil con barra inferior de herramientas, panel de propiedades deslizante y línea de tiempo plegable. Un dedo orbita, dos dedos desplazan y hacen zoom, y un toque selecciona.
 
 ## Requisitos
 
@@ -66,6 +67,33 @@ npm run preview
 
 En el viewport: arrastra con el botón izquierdo para orbitar, usa la rueda para hacer zoom hacia el cursor y el botón derecho para desplazar. Haz clic en un objeto para seleccionarlo y usa el gizmo para transformarlo.
 
+## Versión móvil (teléfonos)
+
+La misma app detecta si estás en un teléfono y cambia a una interfaz táctil de pantalla completa, inspirada en las apps de animación 3D para Android:
+
+- **Barra inferior** con menú, herramientas (seleccionar, mover, rotar, escalar), importar, añadir objeto, clave, deshacer/rehacer, plegar la línea de tiempo, propiedades, reproducir y exportar.
+- **Propiedades** como hoja inferior deslizante: pulsa el botón de la barra para abrirla y toca fuera para cerrarla.
+- **Línea de tiempo** inferior plegable para dejar más espacio a la vista 3D.
+- **Gestos**: un dedo orbita, dos dedos desplazan y hacen zoom, un toque selecciona y un doble toque enfoca.
+- **Menú completo**: como la barra de menús no cabe, el botón **Menú** de la barra inferior abre todas las opciones (archivo, edición, objeto, animación, cámara, render y ayuda).
+- **Rendimiento**: la densidad de píxeles se limita automáticamente para mantener la fluidez y no calentar el teléfono.
+
+### Cómo abrir cada interfaz
+
+| Quiero… | Dirección |
+| --- | --- |
+| Vista de escritorio | `https://tu-app.vercel.app/` |
+| Vista móvil | `https://tu-app.vercel.app/?mobile=1` |
+| Forzar escritorio en un teléfono | `https://tu-app.vercel.app/?desktop=1` |
+
+También puedes cambiar de una a otra desde **Ayuda → Vista móvil / Vista de escritorio**; la elección se recuerda en el navegador.
+
+Trucos para el teléfono:
+
+1. Añade la página a la pantalla de inicio para abrirla a pantalla completa, sin barra del navegador.
+2. Para precisar más, separa dos dedos para acercar la vista antes de mover el gizmo.
+3. Para animar rápido: coloca el cabezal, pulsa **clave**, mueve el objeto y repite; o activa **Auto Key** en la barra superior.
+
 ## Autoguardado
 
 - Mientras trabajas, la barra superior muestra el estado **Auto**: `Guardando`, `Guardado`, `Restaurado` o `Error`.
@@ -102,8 +130,17 @@ En el viewport: arrastra con el botón izquierdo para orbitar, usa la rueda para
 - **OBJ**: si tiene `.mtl` y texturas, selecciona todos los archivos juntos.
 - **FBX**: se importa la geometría y las texturas incrustadas; las animaciones del FBX no se convierten al sistema de claves de PEKITA.
 - **Blockbench**: `.bbmodel` con cubos y texturas. Los tipos de malla avanzados se omiten con un aviso.
-- **Prisma 3D**: soporte best-effort para JSON compatible con bbmodel. Para conservar materiales y jerarquía, exporta desde Prisma a OBJ/GLB.
-- **`.proj` / `.projy`**: se detecta si es JSON compatible con bbmodel o un ZIP; si el ZIP contiene un GLB, glTF, OBJ, FBX, STL, PLY, DAE, 3MF o BBModel, se importa ese modelo con sus texturas. Si es un proyecto de otra app, lo más fiable sigue siendo exportar a GLB/OBJ.
+- **Prisma 3D (`.prism` / `.prisma`)**: el importador abre el archivo y prueba, en este orden:
+  1. **ZIP**: busca dentro un GLB, glTF, OBJ, FBX, STL, PLY, DAE, 3MF, BBModel o un JSON de escena, y lo importa con sus texturas.
+  2. **JSON**: interpreta BBModel, glTF o una escena genérica con arrays de vértices y caras.
+  3. **GLB binario**: si el archivo entero es un GLB.
+  4. **GLB incrustado**: busca la firma `glTF` dentro del binario y extrae el modelo.
+  5. **OBJ incrustado**: busca texto `v …` / `f …` dentro del binario y reconstruye la malla.
+- **`.proj` / `.projy`**: usan exactamente el mismo detector de contenedor que los `.prism`, así que aceptan cualquiera de los cinco casos anteriores.
+
+> El formato `.prism` de Prisma 3D es propietario y no está documentado. El importador cubre los casos más habituales (contenedor ZIP o JSON con malla, GLB/OBJ incrustado) y, si no reconoce el archivo, muestra un aviso con los primeros bytes para poder añadir soporte con una muestra.
+
+Si aun así no se reconoce, lo más fiable es exportar desde la app original a **GLB** o **OBJ**.
 
 Las animaciones incluidas dentro de un GLB/FBX se importan en pose estática; PEKITA usa su propio sistema de claves para animar los objetos.
 
@@ -205,28 +242,31 @@ No se necesita servidor Node en producción: todo el renderizado, la animación,
 1. Ejecuta `npm install` para sincronizar el lockfile.
 2. Ejecuta `npm run build` y comprueba que termina sin errores.
 3. Abre `dist/index.html` con `npm run preview` y prueba: importar un GLB, mover la cámara, añadir fondo, crear un rig, exportar un PNG corto y recargar para verificar el autoguardado.
-4. Sube el repositorio a GitHub y despliega en Vercel.
-5. Si usas un subdirectorio, las rutas relativas de `vite.config.js` ya permiten que funcione sin cambios.
+4. Abre `http://localhost:4173/?mobile=1` y revisa la vista de teléfono (también puedes reducir la ventana o usar el modo dispositivo del navegador).
+5. Sube el repositorio a GitHub y despliega en Vercel.
+6. Si usas un subdirectorio, las rutas relativas de `vite.config.js` ya permiten que funcione sin cambios.
 
 ## Estructura
 
 ```text
 src/
   app.js                 Estado central, selección, claves, historial, autoguardado y archivos
-  main.js                Arranque, drag & drop y manejo de errores
-  style.css              Interfaz completa (1920×1080 y responsive)
+  main.js                Arranque, detección de móvil, drag & drop y manejo de errores
+  style.css              Interfaz de escritorio
+  mobile.css             Interfaz móvil (bajo body.is-mobile)
   icons.js               Iconos SVG y logo 3D de PEKITA
   core/
     viewport.js          Three.js, cámara, gizmo, selección, fondo y captura
     animation.js         Pistas, claves, muestreo y curvas
     easing.js            Cubic-bezier y presets
     audio.js             Decodificación, waveform y reproducción
-    importer.js          Cargadores de modelos, bbmodel y PROJ
+    importer.js          Cargadores de modelos, bbmodel, Prisma y PROJ
     exporter.js          Video, PNG, GLB, proyecto .peki y cámara de exportación
     autosave.js          Copia automática en IndexedDB
   ui/
     topbar.js            Menús, historial, auto-key, autoguardado y exportación
-    toolrail.js          Herramientas de transformación
+    toolrail.js          Herramientas de transformación (escritorio)
+    mobilebar.js         Barra inferior táctil y hoja de menú (móvil)
     inspector.js         Propiedades, modificadores, curvas, rig y jerarquía
     timeline.js          Timeline, clips, clips RIG, audio, claves y transporte
     ui.js                Toasts, modales y progreso
@@ -240,7 +280,8 @@ src/
 - La importación de animaciones esqueléticas externas no está implementada; se importa la pose estática.
 - Para modelos con muchas texturas externas, selecciona todos los archivos a la vez.
 - El autoguardado ocupa espacio en IndexedDB; si el navegador borra los datos del sitio, la copia también desaparece.
-- Un `.proj` propietario que no sea JSON compatible ni un ZIP con modelo estándar no se puede interpretar; en ese caso exporta desde la app original a GLB/OBJ.
+- Un `.prism` / `.proj` propietario que no sea ZIP, JSON, GLB ni OBJ incrustado no se puede interpretar; en ese caso exporta desde la app original a GLB/OBJ y, si quieres soporte directo, comparte una muestra del archivo.
+- La interfaz móvil reutiliza el mismo motor: la escena y el autoguardado son idénticos en teléfono y escritorio, pero el historial de autoguardado es por dominio.
 
 ---
 
