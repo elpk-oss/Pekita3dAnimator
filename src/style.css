@@ -1791,8 +1791,50 @@ svg {
   border-color: #fff;
   box-shadow: 0 0 0 2px rgba(245, 197, 66, 0.45);
 }
+.tl-key.selected.primary {
+  background: var(--accent-strong);
+  border-color: #fff;
+  box-shadow: 0 0 0 2px rgba(245, 197, 66, 0.75), 0 0 8px rgba(245, 197, 66, 0.55);
+}
 .tl-key.dragging {
   cursor: grabbing;
+}
+
+/* Marquesina de selección de keyframes */
+.tl-marquee {
+  position: fixed;
+  z-index: 9999;
+  display: none;
+  border: 1px dashed var(--accent);
+  background: rgba(245, 197, 66, 0.12);
+  border-radius: 3px;
+  pointer-events: none;
+}
+
+.tl-selinfo {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
+  margin-right: 4px;
+  border-radius: 999px;
+  border: 1px solid rgba(245, 197, 66, 0.45);
+  background: rgba(245, 197, 66, 0.12);
+  color: var(--accent);
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.tl-selinfo[hidden] {
+  display: none;
+}
+.tl-selinfo b {
+  font-size: 11px;
+}
+.tl-selinfo span {
+  color: var(--text-dim);
+  font-weight: 500;
 }
 
 .tl-audio-clip {
@@ -3006,6 +3048,35 @@ kbd {
   font-size: 8.5px;
   color: var(--muted-2);
   margin-top: 3px;
+}
+
+/* Inspector: mapa de normales */
+.tex-normal {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+.tex-normal-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 7px;
+}
+.tex-normal-head b {
+  font-size: 10px;
+  color: var(--text-2);
+  letter-spacing: 0.02em;
+}
+.tex-normal-head .tag {
+  font-size: 8px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 1px 5px;
+  border-radius: 999px;
+  color: #7fd4ff;
+  background: rgba(90, 162, 255, 0.14);
+  border: 1px solid rgba(90, 162, 255, 0.3);
 }
 
 /* Inspector: presets de material */
