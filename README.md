@@ -1,3 +1,4 @@
+[README.md](https://github.com/user-attachments/files/33741561/README.md)
 # PEKITA ANIMATE 3D
 
 Animador 3D en el navegador con viewport estilo Blender, timeline estilo CapCut, keyframes con curvas Bézier, audio, fondos de imagen, rigging por controles y exportación de video, secuencia PNG, GLB o proyecto `.peki`.
@@ -13,13 +14,19 @@ Animador 3D en el navegador con viewport estilo Blender, timeline estilo CapCut,
 - **Animación**: claves por canal (posición, rotación y escala), Auto Key, editor de curvas cúbicas de Bézier, presets de easing y borrado/movimiento de claves.
 - **Rigging rápido**: crea un vacío como control y emparenta objetos conservando su posición en el mundo. Al animar el control se mueve todo su grupo.
 - **Clips compuestos**: el clip del padre agrupa las claves de todos sus hijos; al arrastrarlo se desplaza el rig completo con un solo gesto.
-- **Fondos**: importa JPG, PNG, WebP, GIF o BMP como fondo de la escena. Se adapta a la cámara, al viewport y a los videos/PNG exportados.
-- **Autoguardado**: una copia completa del proyecto se guarda en IndexedDB y se restaura al recargar la página.
+- **Fondos**: galería de fondos listos (verde croma, cielo con nubes, atardecer, estudio, degradados y cuadrícula) y opción de importar JPG, PNG, WebP, GIF o BMP. El fondo se adapta a la cámara, al viewport y a las imágenes y videos exportados.
+- **Autoguardado**: una copia completa del proyecto se guarda en IndexedDB y se puede continuar desde la pantalla principal.
+- **Pantalla principal**: al abrir la app eliges tamaño de render (Horizontal 16:9, Vertical 9:16, Cuadrado, Retrato, 720p o 4K, o medidas propias), FPS, duración y fondo inicial. Desde ahí también puedes continuar el proyecto guardado, abrir un `.peki` o importar un modelo.
+- **Tamaño de render**: el tamaño elegido se usa igual para imágenes y videos, y puede cambiarse al final en **Exportar** sin tocar el proyecto.
 - **Modelado rápido**: cubo, esfera, plano, cilindro, cono, toro, vacíos, luces direccional/puntual/foco/ambiental/hemisférica y cámaras.
+- **Piezas ajustables**: cada primitiva conserva sus parámetros (tamaño, grosor, radio, lados, redondeo de bordes…) y se puede editar en vivo desde el inspector, sin perder el historial.
+- **Materiales y texturas**: presets de material (plástico, oro, cristal, mate, emisivo…), importar una imagen como textura o crearla en un editor de texturas con pincel, bote de pintura, patrones y repetición.
+- **Mapa de normales**: añade relieve (bultos, hendiduras, ladrillos en resalte) sin sumar polígonos. Importa un PNG de normales o genéralo desde la textura aplicada, con control de intensidad 0–3.
+- **Copiar y pegar keyframes**: selecciona uno o varios nodos con el ratón —clic, `Shift`/`Ctrl` + clic o arrastrando un recuadro sobre la línea de tiempo— y usa `Ctrl` + `C` / `Ctrl` + `V` para duplicarlos en el cabezal. Se copian los tres canales con su easing y se pegan conservando la separación entre claves.
 - **Modificadores**: alineación, array, espejo, suavizado, sombreado plano, wireframe y sombras.
 - **Importación**: GLB, glTF (+ `.bin` y texturas seleccionadas juntas), OBJ + MTL, FBX, STL, PLY, DAE, 3MF, `.bbmodel` de Blockbench, proyectos **Prisma 3D** (`.prism` / `.prisma`) y `.proj` / `.projy` (contenedor ZIP, JSON, GLB u OBJ incrustado).
-- **Exportación**: video 1920×1080 con audio (MP4 si el navegador lo soporta; WebM como respaldo), secuencia PNG en ZIP, GLB con animación y proyecto `.peki` (escena + fondo + claves + audio).
-- **Cámara de exportación**: al pulsar **Exportar** se abre una vista previa 16:9 con cámara libre, cámaras de la escena y presets (Centro, Centro lejos, Centro cerca, Centro abajo, Frontal, Superior e Isométrica).
+- **Exportación**: video con audio (MP4 si el navegador lo soporta; WebM como respaldo), imagen PNG del fotograma actual, secuencia PNG en ZIP, GLB con animación y proyecto `.peki` (escena, fondo, texturas, claves y audio). Todo respeta el tamaño de render elegido.
+- **Cámara de exportación**: al pulsar **Exportar** se abre una vista previa con el tamaño final, botón de reproducir/pausar para revisar la animación y cámaras libres, cámaras de la escena y presets (Centro, Centro lejos, Centro cerca, Centro abajo, Frontal, Superior e Isométrica).
 - **Interfaz oscura sencilla** pensada para 1920×1080, con acento amarillo y menos brillos.
 - **Versión móvil estilo app**: en teléfonos la interfaz se convierte en un editor táctil con barra inferior de herramientas, panel de propiedades deslizante y línea de tiempo plegable. Un dedo orbita, dos dedos desplazan y hacen zoom, y un toque selecciona.
 
@@ -58,6 +65,8 @@ npm run preview
 | Fotograma anterior / siguiente | `←` / `→` |
 | Saltar un segundo | `Shift` + `←` / `→` |
 | Borrar clave u objeto | `Supr` |
+| Copiar / pegar keyframes | `Ctrl` + `C` / `Ctrl` + `V` |
+| Seleccionar todos los keyframes | `Ctrl` + `A` |
 | Duplicar | `Ctrl` + `D` |
 | Guardar proyecto `.peki` | `Ctrl` + `S` |
 | Abrir proyecto | `Ctrl` + `O` |
@@ -66,6 +75,8 @@ npm run preview
 | Deshacer / Rehacer | `Ctrl` + `Z` / `Ctrl` + `Y` |
 
 En el viewport: arrastra con el botón izquierdo para orbitar, usa la rueda para hacer zoom hacia el cursor y el botón derecho para desplazar. Haz clic en un objeto para seleccionarlo y usa el gizmo para transformarlo.
+
+En la línea de tiempo: un clic en un nodo selecciona ese keyframe, `Shift` o `Ctrl` + clic añade o quita nodos de la selección y arrastrar sobre una pista dibuja un recuadro que selecciona todos los nodos que toca. Si arrastras uno de los nodos ya seleccionados, se mueven todos juntos; con varios nodos seleccionados el contador de la cabecera muestra cuántos hay.
 
 ## Versión móvil (teléfonos)
 
