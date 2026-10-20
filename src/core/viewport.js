@@ -30,7 +30,9 @@ export class Viewport {
       preserveDrawingBuffer: true,
       powerPreference: 'high-performance',
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    // En móvil se limita la densidad de píxeles para mantener 60 fps y no
+    // calentar el teléfono; en escritorio se aprovecha la pantalla completa.
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, this.app.mobile ? 1.5 : 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.08;
@@ -249,8 +251,19 @@ export class Viewport {
     this.orbit.maxPolarAngle = Math.PI * 0.495;
     this.orbit.update();
 
+    if (this.app.mobile) {
+      // Gestos táctiles estilo app móvil: 1 dedo orbita, 2 dedos desplazan y
+      // hacen zoom. Se desactiva zoomToCursor porque salta con el pinch.
+      this.orbit.zoomToCursor = false;
+      this.orbit.rotateSpeed = 0.6;
+      this.orbit.panSpeed = 0.72;
+      this.orbit.zoomSpeed = 0.85;
+      this.orbit.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
+      this.renderer.domElement.style.touchAction = 'none';
+    }
+
     this.transform = new TransformControls(this.camera, this.renderer.domElement);
-    this.transform.setSize(0.86);
+    this.transform.setSize(this.app.mobile ? 1.3 : 0.86);
     this.transform.setMode('translate');
     this.transformHelper = this.transform.getHelper();
     this.scene.add(this.transformHelper);
@@ -284,7 +297,11 @@ export class Viewport {
         <span><b id="vp-fps">60</b> fps</span>
         <span><b id="vp-tri">0</b> tris</span>
       </div>
-      <div class="vp-hint">Arrastra para orbitar · Rueda para zoom · Click para seleccionar</div>
+      <div class="vp-hint">${
+        this.app.mobile
+          ? '1 dedo: orbitar · 2 dedos: mover y zoom · Toca para seleccionar'
+          : 'Arrastra para orbitar · Rueda para zoom · Click para seleccionar'
+      }</div>
       <div class="vp-activecam" id="vp-activecam" style="display:none"></div>
     `;
 
