@@ -33,6 +33,7 @@ export class Timeline {
           <button class="tp-btn" data-act="loop" id="tl-loop" title="Repetir">${icon('repeat', 13)}</button>
         </div>
         <div class="tl-spacer"></div>
+        <div class="tl-selinfo" id="tl-selinfo" hidden title="Keyframes seleccionados"></div>
         <div class="tl-field duration-field"><span>Dur</span><input id="tl-duration" type="number" min="0.5" max="600" step="0.5" title="Duración en segundos"></div>
         <div class="tl-field fps-field"><span>FPS</span>
           <select id="tl-fps" title="Fotogramas por segundo">
@@ -77,6 +78,7 @@ export class Timeline {
     this.loopButton = this.root.querySelector('#tl-loop');
     this.zoomRange = this.root.querySelector('#tl-zoom-range');
     this.playButton = this.root.querySelector('[data-act="play"]');
+    this.selInfo = this.root.querySelector('#tl-selinfo');
   }
 
   bind() {
@@ -159,6 +161,7 @@ export class Timeline {
     this.shade.style.top = '27px';
 
     this.timeLabel.textContent = formatTimecode(this.app.currentTime, this.app.fps);
+    this.updateSelectionInfo();
     if (document.activeElement !== this.durationInput) this.durationInput.value = String(this.app.duration);
     if (document.activeElement !== this.fpsSelect) this.fpsSelect.value = String(this.app.fps);
     if (document.activeElement !== this.zoomRange) this.zoomRange.value = String(this.app.timelinePPS);
@@ -215,9 +218,11 @@ export class Timeline {
       clip = `<div class="tl-clip ${composite ? 'composite' : ''}" data-entry="${entry.id}" style="left:${left}px;width:${width}px;--clip-color:${entry.color}" title="${composite ? 'Clip compuesto del rig' : 'Clip de animación'}">${composite ? '<span class="tl-clip-badge">RIG</span>' : ''}</div>`;
     }
     for (const time of times) {
-      const isSelected =
+      const isSelected = this.app.isKeySelected(entry.id, time);
+      const isPrimary =
         this.app.selectedKey && this.app.selectedKey.id === entry.id && Math.abs(this.app.selectedKey.time - time) < 0.0006;
-      keys += `<div class="tl-key ${isSelected ? 'selected' : ''}" data-entry="${entry.id}" data-time="${time}" style="left:${Math.max(4, time * pps)}px" title="${formatTimecode(time, this.app.fps)}"></div>`;
+      const dragging = isSelected && this.drag?.mode === 'keys' ? 'dragging' : '';
+      keys += `<div class="tl-key ${isSelected ? 'selected' : ''} ${isPrimary ? 'primary' : ''} ${dragging}" data-entry="${entry.id}" data-time="${time}" style="left:${Math.max(4, time * pps)}px" title="${formatTimecode(time, this.app.fps)}"></div>`;
     }
     const eyeIcon = entry.visible ? 'eye' : 'eyeOff';
     return `
@@ -308,6 +313,40 @@ export class Timeline {
     return clamp(time, 0, this.app.duration);
   }
 
+  updateSelectionInfo() {
+    if (!this.selInfo) return;
+    const count = this.app.selectedKeys?.length || 0;
+    if (count < 2) {
+      this.selInfo.hidden = true;
+      this.selInfo.textContent = '';
+      return;
+    }
+    this.selInfo.hidden = false;
+    this.selInfo.innerHTML = `<b>${count}</b> keys <span>Ctrl+C · Ctrl+V</span>`;
+  }
+
+  showMarquee(x1, y1, x2, y2) {
+    if (!this.marquee) {
+      this.marquee = document.createElement('div');
+      this.marquee.className = 'tl-marquee';
+      document.body.appendChild(this.marquee);
+    }
+    const left = Math.min(x1, x2);
+    const top = Math.min(y1, y2);
+    const width = Math.abs(x2 - x1);
+    const height = Math.abs(y2 - y1);
+    this.marquee.style.left = `${left}px`;
+    this.marquee.style.top = `${top}px`;
+    this.marquee.style.width = `${width}px`;
+    this.marquee.style.height = `${height}px`;
+    this.marquee.style.display = 'block';
+    if (this.drag) this.drag.rect = { left, top, right: left + width, bottom: top + height };
+  }
+
+  hideMarquee() {
+    if (this.marquee) this.marquee.style.display = 'none';
+  }
+
   onPointerDown(event) {
     if (event.button !== 0) return;
     const target = event.target;
@@ -342,9 +381,22 @@ export class Timeline {
       event.preventDefault();
       const entryId = key.dataset.entry;
       const time = Number(key.dataset.time);
-      this.app.selectKey(entryId, time);
-      this.drag = { mode: 'key', entryId, originalTime: time, lastTime: time, startX: event.clientX };
-      key.classList.add('dragging');
+      const additive = event.shiftKey || event.ctrlKey || event.metaKey;
+      if (additive) {
+        this.app.selectKey(entryId, time, { additive: true, seek: false });
+        return;
+      }
+      if (this.app.isKeySelected(entryId, time)) {
+        // Ya forma parte de la selección múltiple: se arrastran todos.
+        this.app.selectedId = entryId;
+        this.app.selectedKey = { id: entryId, time };
+        this.app.timeline?.render();
+      } else {
+        this.app.selectKey(entryId, time);
+      }
+      this.app.startKeyDrag();
+      this.drag = { mode: 'keys', startX: event.clientX, lastDelta: 0, moved: false };
+      this.rowsEl.querySelectorAll('.tl-key.selected').forEach((node) => node.classList.add('dragging'));
       return;
     }
 
@@ -383,13 +435,34 @@ export class Timeline {
 
     if (lane || ruler) {
       event.preventDefault();
-      let entryId = lane?.dataset.entry || null;
-      if (entryId) this.app.select(entryId);
+      const additive = event.shiftKey || event.ctrlKey || event.metaKey;
+      if (ruler) {
+        const time = this.timeFromEvent(event);
+        if (time == null) return;
+        this.app.seek(snapTime(time, this.app.fps));
+        this.drag = { mode: 'scrub' };
+        return;
+      }
+      const entryId = lane?.dataset.entry || null;
+      // El tiempo se calcula antes de re-renderizar: `select()` sustituye las filas.
       const time = this.timeFromEvent(event);
-      if (time == null) return;
-      const snapped = snapTime(time, this.app.fps);
-      this.app.seek(snapped);
-      this.drag = { mode: 'scrub' };
+      if (entryId) {
+        if (additive) {
+          this.app.selectedId = entryId;
+          this.app.viewport?.updateSelection(this.app.objects.get(entryId));
+          this.app.inspector?.render();
+        } else {
+          this.app.select(entryId);
+        }
+      }
+      this.drag = {
+        mode: 'marquee',
+        startX: event.clientX,
+        startY: event.clientY,
+        time,
+        additive,
+        moved: false,
+      };
     }
   }
 
@@ -405,13 +478,24 @@ export class Timeline {
       return;
     }
 
-    if (this.drag.mode === 'key') {
-      const delta = (event.clientX - this.drag.startX) / pps;
-      const target = snapTime(clamp(this.drag.originalTime + delta, 0, this.app.duration), this.app.fps);
-      if (Math.abs(target - this.drag.lastTime) > 0.0001) {
-        this.app.moveKeyframe(this.drag.entryId, this.drag.lastTime, target);
-        this.drag.lastTime = target;
+    if (this.drag.mode === 'keys') {
+      const dx = event.clientX - this.drag.startX;
+      if (!this.drag.moved && Math.abs(dx) < 3) return;
+      const snapped = Math.round((dx / pps) * this.app.fps) / this.app.fps;
+      if (!this.drag.moved || Math.abs(snapped - this.drag.lastDelta) > 1e-6) {
+        this.drag.moved = true;
+        this.drag.lastDelta = snapped;
+        this.app.applyKeyDrag(snapped);
       }
+      return;
+    }
+
+    if (this.drag.mode === 'marquee') {
+      const dx = event.clientX - this.drag.startX;
+      const dy = event.clientY - this.drag.startY;
+      if (!this.drag.moved && Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
+      this.drag.moved = true;
+      this.showMarquee(this.drag.startX, this.drag.startY, event.clientX, event.clientY);
       return;
     }
 
@@ -443,12 +527,38 @@ export class Timeline {
     this.drag = null;
     this.rowsEl.querySelectorAll('.dragging').forEach((node) => node.classList.remove('dragging'));
 
-    if (drag.mode === 'key' || drag.mode === 'clip' || drag.mode === 'audio') {
+    if (drag.mode === 'keys') {
+      this.app.endKeyDrag(!!drag.moved);
+      this.render();
+      return;
+    }
+
+    if (drag.mode === 'marquee') {
+      this.hideMarquee();
+      if (!drag.moved) {
+        if (drag.time != null) this.app.seek(snapTime(drag.time, this.app.fps));
+        return;
+      }
+      const rect = drag.rect;
+      const found = [];
+      if (rect) {
+        this.rowsEl.querySelectorAll('.tl-key').forEach((node) => {
+          const box = node.getBoundingClientRect();
+          if (box.right < rect.left || box.left > rect.right || box.bottom < rect.top || box.top > rect.bottom) {
+            return;
+          }
+          found.push({ entryId: node.dataset.entry, time: Number(node.dataset.time) });
+        });
+      }
+      const base = drag.additive ? this.app.selectedKeys : [];
+      this.app.setKeySelection([...base, ...found]);
+      return;
+    }
+
+    if (drag.mode === 'clip' || drag.mode === 'audio') {
       if (drag.mode === 'clip') {
         if (drag.composite) this.app.shiftSubtreeKeys(drag.entryId, drag.originalTracks, drag.lastDelta, true);
         else this.app.shiftEntryKeys(drag.entryId, drag.originalTracks.get(drag.entryId), drag.lastDelta, true);
-      } else if (drag.mode === 'audio') {
-        this.app.commitChange();
       } else {
         this.app.commitChange();
       }
