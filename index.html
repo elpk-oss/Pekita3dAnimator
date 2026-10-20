@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0b0e14" />
+    <meta name="description" content="PEKITA ANIMATE 3D — animador 3D con timeline estilo CapCut, keyframes y curvas Bézier." />
+    <title>PEKITA ANIMATE 3D</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%230e131c'/%3E%3Cpath d='M18 14H42L50 22V32L42 40H28V50H18Z' fill='%238f6a0e'/%3E%3Cpath d='M14 10H38L46 18V28L38 36H24V46H14Z' fill='%23f5c542'/%3E%3Cpath d='M24 18H35L37 20V24L35 26H24Z' fill='%230e131c'/%3E%3C/svg%3E" />
+  </head>
+  <body>
+    <div id="app">
+      <header id="topbar" class="topbar"></header>
+      <main class="workspace">
+        <nav id="toolrail" class="toolrail"></nav>
+        <section id="viewport" class="viewport">
+          <div id="viewport-hud" class="viewport-hud"></div>
+        </section>
+        <aside id="inspector" class="inspector"></aside>
+      </main>
+      <section id="timeline" class="timeline"></section>
+    </div>
+
+    <div id="modal-root"></div>
+    <div id="toast-root" class="toast-root"></div>
+
+    <input id="file-import" type="file" multiple hidden
+      accept=".glb,.gltf,.obj,.fbx,.stl,.ply,.bbmodel,.json,.prisma,.proj,.projy,.3mf,.dae,.mtl" />
+    <input id="file-project" type="file" hidden accept=".peki,.zip,.json" />
+    <input id="file-audio" type="file" hidden accept="audio/*,.mp3,.wav,.ogg,.m4a,.aac,.flac" />
+    <input id="file-texture" type="file" hidden accept="image/*" />
+    <input id="file-background" type="file" hidden accept="image/*" />
+
+    <div id="boot" class="boot">
+      <div class="boot-logo">
+        <svg viewBox="0 0 48 48" width="56" height="56" aria-hidden="true">
+          <path d="M13 8H33L42 17V27L33 36H23V44H13Z" fill="#8f6a0e"/>
+          <path d="M9 12H31L38 19V27L31 34H20V43H9Z" fill="#f5c542"/>
+          <path d="M20 20H29L31 22V25L29 27H20Z" fill="#0e131c"/>
+          <path d="M9 12H31L38 19H16L9 12Z" fill="#ffdb72" opacity="0.55"/>
+        </svg>
+        <div>
+          <strong>PEKITA</strong>
+          <span>ANIMATE 3D</span>
+        </div>
+      </div>
+      <div class="boot-bar"><i></i></div>
+      <p>Preparando el estudio 3D…</p>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

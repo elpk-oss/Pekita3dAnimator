@@ -1,0 +1,22 @@
+{
+  "name": "pekita-animate-3d",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "PEKITA ANIMATE 3D — animador y editor 3D con timeline estilo CapCut",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0"
+  },
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "dependencies": {
+    "jszip": "^3.10.1",
+    "three": "^0.186.1"
+  },
+  "devDependencies": {
+    "vite": "^8.3.4"
+  }
+}
