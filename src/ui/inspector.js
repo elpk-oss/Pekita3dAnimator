@@ -1,6 +1,10 @@
 import { icon } from '../icons.js';
 import { CHANNELS, CHANNEL_LABELS } from '../core/animation.js';
 import { DEFAULT_EASING, EASING_PRESETS, easingLabel, presetForPoints } from '../core/easing.js';
+import { primitiveDef } from '../core/primitives.js';
+import { MATERIAL_PRESETS } from '../core/materials.js';
+import { BACKGROUND_PRESETS, presetThumbnail } from '../core/backgrounds.js';
+import { TEXTURE_PATTERNS, patternDataUrl, patternThumbnail } from '../core/textures.js';
 import { clamp, escapeHtml, formatTimecode } from '../utils.js';
 
 const TABS = [
@@ -213,11 +217,17 @@ export class Inspector {
            </div></div>
            <div class="slider-row"><label>Intensidad</label><input type="range" min="0" max="4" step="0.05" value="${first.emissiveIntensity ?? 1}" data-mat="emissiveIntensity" /><span class="val">${(first.emissiveIntensity ?? 1).toFixed(2)}</span></div>
            <div class="switch-row"><span>Wireframe</span><button class="switch ${materials.some((m) => m.wireframe) ? 'on' : ''}" data-toggle="wireframe"></button></div>
-           <div class="switch-row"><span>Flat shading</span><button class="switch ${materials.some((m) => m.flatShading) ? 'on' : ''}" data-toggle="flat"></button></div>`,
+           <div class="switch-row"><span>Flat shading</span><button class="switch ${materials.some((m) => m.flatShading) ? 'on' : ''}" data-toggle="flat"></button></div>
+           <div class="mat-presets">
+             ${MATERIAL_PRESETS.map((preset) => `<button class="mat-preset" data-mat-preset="${preset.id}">${escapeHtml(preset.name)}</button>`).join('')}
+           </div>`,
           `${materials.length} material${materials.length === 1 ? '' : 'es'}`,
         );
       }
     }
+
+    const pieceSection = this.renderPiece(entry);
+    const textureSection = materialSection ? this.renderTexture(entry) : '';
 
     let lightSection = '';
     if (entry.type === 'light') {
@@ -266,7 +276,85 @@ export class Inspector {
       );
     }
 
-    return `${transform}${materialSection}${lightSection}${cameraSection}${typeSection}`;
+    return `${transform}${pieceSection}${materialSection}${textureSection}${lightSection}${cameraSection}${typeSection}`;
+  }
+
+  /** Parámetros de la pieza: tamaño, redondeo de bordes y suavidad. */
+  renderPiece(entry) {
+    const primitive = entry?.primitive;
+    if (!primitive) return '';
+    const def = primitiveDef(primitive.kind);
+    if (!def?.fields?.length) return '';
+    const params = { ...def.defaults, ...(primitive.params || {}) };
+    const rows = def.fields
+      .map((field) => {
+        const value = Number(params[field.key] ?? 0);
+        const label = escapeHtml(field.label);
+        const useRange = field.step >= 1 || field.max <= 1.5;
+        const formatted = field.step >= 1 ? String(Math.round(value)) : value.toFixed(2);
+        if (useRange) {
+          return `<div class="slider-row"><label>${label}</label><input type="range" min="${field.min}" max="${field.max}" step="${field.step}" value="${value}" data-piece="${field.key}" /><span class="val">${formatted}</span></div>`;
+        }
+        return `<div class="field-row"><label>${label}</label><input type="number" min="${field.min}" max="${field.max}" step="${field.step}" value="${value}" data-piece="${field.key}" /></div>`;
+      })
+      .join('');
+    const hint = primitive.kind === 'box' && Number(params.radius) > 0.002 ? ' · bordes redondeados' : '';
+    return this.section(
+      'Pieza',
+      `${rows}
+       <div class="btn-row grid2">
+         <button class="btn sm" data-action="piece-ground">${icon('target', 11)} Apoyar abajo</button>
+         <button class="btn sm" data-action="piece-reset">${icon('undo', 11)} Valores base</button>
+       </div>
+       <p class="mod-desc">Cambia la forma de la pieza sin perder materiales, texturas ni animación.</p>`,
+      `${escapeHtml(def.name)}${hint}`,
+    );
+  }
+
+  /** Texturas: importar, crear con el editor o patrones rápidos. */
+  renderTexture(entry) {
+    const record = entry?.textureId ? this.app.textures.get(entry.textureId) : null;
+    const repeat = entry?.textureRepeat ?? 1;
+    const material = this.app.materialList(entry)[0];
+    const colorA = material?.color ? `#${material.color.getHexString()}` : '#f5c542';
+    const quick = TEXTURE_PATTERNS.map(
+      (pattern) =>
+        `<button class="tex-quick-btn" data-quick-texture="${pattern.id}" title="${escapeHtml(pattern.name)}">
+           <img src="${patternThumbnail(pattern.id, 42, { colorA, colorB: '#1b2230' })}" alt="" />
+         </button>`,
+    ).join('');
+    return this.section(
+      'Textura',
+      `<div class="tex-actions">
+         <button class="btn sm" data-action="import-texture">${icon('upload', 11)} Importar imagen</button>
+         <button class="btn sm" data-action="create-texture">${icon('grid', 11)} Crear textura</button>
+       </div>
+       <p class="mod-desc">Un toque para aplicar un patrón generado:</p>
+       <div class="tex-quick">${quick}</div>
+       ${
+         record
+           ? `<div class="tex-current">
+                <img src="${record.dataUrl}" alt="" />
+                <div><b>${escapeHtml(record.name || 'Textura')}</b><span>Aplicada a la pieza</span></div>
+                <button class="mini-btn" data-action="clear-texture" title="Quitar textura">${icon('trash', 11)}</button>
+              </div>
+              <div class="slider-row"><label>Repetir</label><input type="range" min="0.25" max="8" step="0.25" value="${repeat}" data-texture-repeat /><span class="val">${Number(repeat).toFixed(2)}×</span></div>
+              <div class="btn-row"><button class="btn sm" data-action="create-texture">${icon('sparkles', 11)} Editar textura actual</button></div>`
+           : '<p class="mod-desc">Sin textura: el color del material se usa tal cual.</p>'
+       }`,
+      record ? 'activa' : 'ninguna',
+    );
+  }
+
+  /** Aplica un patrón generado como textura de la pieza. */
+  async applyQuickTexture(patternId) {
+    const entry = this.entry;
+    if (!entry || !patternId) return;
+    const material = this.app.materialList(entry)[0];
+    const colorA = material?.color ? `#${material.color.getHexString()}` : '#f5c542';
+    const pattern = TEXTURE_PATTERNS.find((item) => item.id === patternId);
+    const dataUrl = patternDataUrl(patternId, 256, { colorA, colorB: '#1b2230' });
+    await this.app.applyTexture(dataUrl, pattern?.name || 'Patrón');
   }
 
   renderModifiers() {
@@ -305,7 +393,7 @@ export class Inspector {
          <div class="field-row"><label>Eje</label><select id="mod-mirror-axis"><option value="x">X</option><option value="y">Y</option><option value="z">Z</option></select></div>
          <button class="btn wide" data-action="mirror">${icon('copy', 12)} Aplicar espejo</button>`,
       )}
-      <p class="mod-desc" style="padding:0 2px">Los cambios de geometría no se pueden deshacer con Ctrl+Z.</p>
+      <p class="mod-desc" style="padding:0 2px">Todos estos cambios se pueden deshacer con <b>Ctrl+Z</b>.</p>
     `;
   }
 
@@ -501,15 +589,33 @@ export class Inspector {
     const background = this.app.background;
     const backgroundSection = this.section(
       'Fondo de la animación',
-      background
-        ? `<div class="bg-preview">
-             <img src="${background.url}" alt="" />
-             <div class="bg-info"><b>${escapeHtml(background.name)}</b><span>Se adapta a la cámara y a la exportación</span></div>
-             <button class="mini-btn" data-action="remove-background" title="Quitar fondo">${icon('trash', 12)}</button>
-           </div>
-           <button class="btn wide" data-action="import-background">${icon('image', 12)} Cambiar imagen</button>`
-        : `<p class="mod-desc">Añade una imagen JPG, PNG o WebP como fondo de la escena. Se verá en la vista y en los videos exportados.</p>
-           <button class="btn wide" data-action="import-background">${icon('image', 12)} Importar imagen de fondo</button>`,
+      `<div class="bg-gallery">
+         <button class="bg-thumb ${background ? '' : 'selected'}" data-bg-preset="" title="Sin fondo"><span>Ninguno</span></button>
+         ${BACKGROUND_PRESETS.map(
+           (preset) =>
+             `<button class="bg-thumb ${background?.presetId === preset.id ? 'selected' : ''}" data-bg-preset="${preset.id}" title="${escapeHtml(preset.name)}">
+                <img src="${presetThumbnail(preset.id, 96, 54)}" alt="" />
+              </button>`,
+         ).join('')}
+       </div>
+       ${
+         background
+           ? `<div class="bg-preview">
+                <img src="${background.url}" alt="" />
+                <div class="bg-info"><b>${escapeHtml(background.name)}</b><span>Se adapta a la cámara y a la exportación</span></div>
+                <button class="mini-btn" data-action="remove-background" title="Quitar fondo">${icon('trash', 12)}</button>
+              </div>`
+           : '<p class="mod-desc">Elige un fondo listo para usar (croma, cielo, estudio…) o importa tu propia imagen.</p>'
+       }
+       <button class="btn wide" data-action="import-background">${icon('image', 12)} Importar imagen de fondo</button>`,
+      background ? escapeHtml(background.name) : 'Ninguno',
+    );
+
+    const renderSection = this.section(
+      'Render',
+      `<div class="field-row"><label>Tamaño</label><button class="btn sm" data-action="edit-render-size">${this.app.renderSizeLabel}</button></div>
+       <p class="mod-desc">Se usa al exportar imagen y video. Puedes cambiarlo también desde Exportar.</p>`,
+      `${this.app.fps} fps · ${this.app.duration.toFixed(1)} s`,
     );
     const audioSection = audio.hasAudio
       ? this.section(
@@ -546,6 +652,7 @@ export class Inspector {
         </div>`,
       )}
       ${backgroundSection}
+      ${renderSection}
       ${audioSection}`;
   }
 
@@ -688,7 +795,22 @@ export class Inspector {
           if (parentId) this.app.reparentSelectedTo(parentId);
         } else if (action === 'import-background') this.app.triggerBackgroundImport();
         else if (action === 'remove-background') this.app.clearBackground();
-        else if (action === 'add-key') this.app.addKeyframe(this.entry?.id || this.app.selectedId);
+        else if (action === 'import-texture') this.app.triggerTextureImport();
+        else if (action === 'create-texture') this.app.openTextureEditor();
+        else if (action === 'clear-texture') this.app.clearTexture(this.entry);
+        else if (action === 'edit-render-size') this.app.openRenderSizeDialog();
+        else if (action === 'piece-ground') {
+          const def = primitiveDef(this.entry?.primitive?.kind);
+          if (def?.ground && this.entry) {
+            this.entry.object.position.y = def.ground({ ...def.defaults, ...(this.entry.primitive.params || {}) });
+            this.syncTransform();
+            this.app.viewport?.updateSelectionGeometry();
+            this.app.commitChange();
+          }
+        } else if (action === 'piece-reset') {
+          const def = primitiveDef(this.entry?.primitive?.kind);
+          if (def && this.entry) this.app.updatePrimitive(this.entry, def.defaults, { ground: true });
+        } else if (action === 'add-key') this.app.addKeyframe(this.entry?.id || this.app.selectedId);
         else if (action === 'add-key-channel') this.app.addKeyframe(this.entry.id, this.app.currentTime, button.dataset.channelName);
         else if (action === 'add-primitive') this.app.addPrimitive(button.dataset.kind);
         else if (action === 'add-light') this.app.addLight('directional');
@@ -700,6 +822,52 @@ export class Inspector {
           this.render();
         }
       });
+    });
+
+    this.body.querySelectorAll('[data-piece]').forEach((input) => {
+      const key = input.dataset.piece;
+      const live = () => {
+        const value = Number(input.value);
+        if (!Number.isFinite(value)) return;
+        this.app.updatePrimitive(this.entry, { [key]: value }, { commit: false, render: false, ground: false });
+        const label = input.parentElement?.querySelector('.val');
+        if (label) label.textContent = Number(input.step) >= 1 ? String(Math.round(value)) : value.toFixed(2);
+      };
+      input.addEventListener('input', live);
+      input.addEventListener('change', () => {
+        const value = Number(input.value);
+        if (Number.isFinite(value)) {
+          this.app.updatePrimitive(this.entry, { [key]: value }, { commit: true, render: false, ground: false });
+        }
+        this.render();
+      });
+    });
+
+    this.body.querySelectorAll('[data-mat-preset]').forEach((button) => {
+      button.addEventListener('click', () => this.app.applyMaterialPreset(this.entry, button.dataset.matPreset));
+    });
+
+    this.body.querySelectorAll('[data-quick-texture]').forEach((button) => {
+      button.addEventListener('click', () => this.applyQuickTexture(button.dataset.quickTexture));
+    });
+
+    this.body.querySelectorAll('[data-bg-preset]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const id = button.dataset.bgPreset;
+        if (id) this.app.setBackgroundPreset(id);
+        else this.app.clearBackground();
+      });
+    });
+
+    this.body.querySelectorAll('[data-texture-repeat]').forEach((input) => {
+      input.addEventListener('input', () => {
+        const value = Number(input.value);
+        if (!Number.isFinite(value)) return;
+        const label = input.parentElement?.querySelector('.val');
+        if (label) label.textContent = `${value.toFixed(2)}×`;
+        this.app.setTextureRepeat(this.entry, value);
+      });
+      input.addEventListener('change', () => this.app.commitChange());
     });
 
     this.body.querySelectorAll('[data-audio]').forEach((input) => {
