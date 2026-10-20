@@ -36,8 +36,20 @@ export function openExportDialog(app) {
     fov: 45,
     camera: new THREE.PerspectiveCamera(45, 16 / 9, 0.05, 4000),
     sceneEntryId: '',
+    width: app.renderSize?.width || WIDTH,
+    height: app.renderSize?.height || HEIGHT,
+    fps: app.fps || 30,
   };
   const radius = Math.max(0.5, bounds.radius);
+
+  const SIZE_PRESETS = [
+    { label: 'Horizontal', width: 1920, height: 1080 },
+    { label: 'Vertical', width: 1080, height: 1920 },
+    { label: 'Cuadrado', width: 1080, height: 1080 },
+    { label: 'Retrato', width: 1080, height: 1350 },
+    { label: 'HD', width: 1280, height: 720 },
+    { label: '4K', width: 3840, height: 2160 },
+  ];
 
   const body = document.createElement('div');
   body.className = 'export-dialog';
@@ -46,12 +58,14 @@ export function openExportDialog(app) {
       <div class="export-preview-col">
         <div class="export-preview-wrap" id="export-preview-wrap">
           <canvas id="export-preview-canvas" width="640" height="360"></canvas>
-          <div class="export-preview-badge">VISTA PREVIA · 16:9</div>
+          <div class="export-preview-badge" id="export-preview-badge">VISTA PREVIA · 16:9</div>
           <div class="export-preview-hint" id="export-preview-hint">Arrastra para orbitar · Rueda para zoom</div>
         </div>
         <div class="export-preview-foot">
-          <span><b>1920×1080</b> · ${app.duration.toFixed(2)} s · ${app.fps} fps</span>
-          <span>${app.audio.hasAudio ? 'Con audio' : 'Sin audio'}</span>
+          <span>
+            <button class="btn sm" id="export-play">${icon('play', 10)} Reproducir</button>
+          </span>
+          <span id="export-preview-info"><b>${state.width}×${state.height}</b> · ${app.duration.toFixed(2)} s · ${state.fps} fps</span>
         </div>
       </div>
       <div class="export-camera-col">
@@ -77,6 +91,26 @@ export function openExportDialog(app) {
           <button class="btn" id="export-add-camera">${icon('camera', 12)} Añadir cámara</button>
         </div>
         <p class="mod-desc" id="export-camera-note">Cámara libre basada en los límites de la escena. Los presets cambian el encuadre.</p>
+
+        <div class="export-camera-head" style="margin-top:14px">
+          <h4>Tamaño de render</h4>
+          <span>Vale para imagen y video. Se puede cambiar sin volver a empezar.</span>
+        </div>
+        <div class="export-sizes" id="export-sizes">
+          ${SIZE_PRESETS.map(
+            (preset) => `<button class="preset-btn" data-size-w="${preset.width}" data-size-h="${preset.height}">${preset.label}<small>${preset.width}×${preset.height}</small></button>`,
+          ).join('')}
+        </div>
+        <div class="size-row">
+          <input type="number" id="export-width" min="64" max="4096" step="1" value="${state.width}" aria-label="Ancho" />
+          <button class="btn sm" id="export-swap" title="Girar orientación">${icon('repeat', 12)}</button>
+          <input type="number" id="export-height" min="64" max="4096" step="1" value="${state.height}" aria-label="Alto" />
+        </div>
+        <div class="field-row"><label>FPS</label>
+          <select id="export-fps">
+            ${[24, 30, 60].map((fps) => `<option value="${fps}" ${fps === state.fps ? 'selected' : ''}>${fps} fps</option>`).join('')}
+          </select>
+        </div>
       </div>
     </div>
     <div class="export-formats">
@@ -84,11 +118,15 @@ export function openExportDialog(app) {
       <div class="export-grid">
         <button class="export-card yellow" data-export="video">
           <div class="ec-ico">${icon('video', 18)}</div>
-          <div><b>Video</b><span>MP4/WebM · 1920×1080 · con audio</span></div>
+          <div><b>Video</b><span>MP4/WebM · <span id="export-card-size">${state.width}×${state.height}</span> · con audio</span></div>
+        </button>
+        <button class="export-card" data-export="still">
+          <div class="ec-ico">${icon('image', 18)}</div>
+          <div><b>Imagen PNG</b><span>Fotograma actual · ${state.width}×${state.height}</span></div>
         </button>
         <button class="export-card" data-export="png">
-          <div class="ec-ico">${icon('image', 18)}</div>
-          <div><b>Secuencia PNG</b><span>ZIP con fotogramas a ${app.fps} fps</span></div>
+          <div class="ec-ico">${icon('film', 18)}</div>
+          <div><b>Secuencia PNG</b><span>ZIP con fotogramas a <span id="export-card-fps">${state.fps}</span> fps</span></div>
         </button>
         <button class="export-card green" data-export="glb">
           <div class="ec-ico">${icon('cube', 18)}</div>
@@ -96,16 +134,25 @@ export function openExportDialog(app) {
         </button>
         <button class="export-card purple" data-export="project">
           <div class="ec-ico">${icon('save', 18)}</div>
-          <div><b>Proyecto .peki</b><span>Escena, fondo, audio, keys y curvas</span></div>
+          <div><b>Proyecto .peki</b><span>Escena, fondo, audio, texturas y keys</span></div>
         </button>
       </div>
     </div>
-    <p class="mod-desc" style="margin:13px 2px 0">Duración actual: <b>${app.duration.toFixed(2)} s</b> · ${app.fps} fps · ${app.audio.hasAudio ? 'audio incluido' : 'sin audio'}.</p>
+    <p class="mod-desc" style="margin:13px 2px 0">Duración actual: <b>${app.duration.toFixed(2)} s</b> · ${app.fps} fps de timeline · ${app.audio.hasAudio ? 'audio incluido' : 'sin audio'}.</p>
   `;
 
   let preview = null;
   let raf = 0;
   let drag = null;
+  let playingHere = false;
+  const stopPreview = () => {
+    if (playingHere) {
+      playingHere = false;
+      app.pause();
+    }
+    cancelAnimationFrame(raf);
+    preview?.dispose();
+  };
   const modal = showModal({
     title: 'Exportar',
     body,
@@ -113,8 +160,9 @@ export function openExportDialog(app) {
     className: 'export-modal',
     actions: [{ label: 'Cancelar' }],
     onClose: () => {
-      cancelAnimationFrame(raf);
-      preview?.dispose();
+      app.setRenderSize(state.width, state.height);
+      if (state.fps && state.fps !== app.fps) app.setFPS(state.fps);
+      stopPreview();
       if (app.autosaveDirty) app.scheduleAutosave?.(900);
     },
   });
@@ -145,12 +193,17 @@ export function openExportDialog(app) {
       ctx.fillText('La vista previa no está disponible en este navegador.', canvas.width / 2, canvas.height / 2);
     }
   }
+  syncSizeUI();
+
+  function sizeRatio() {
+    return Math.max(0.05, state.width / Math.max(1, state.height));
+  }
 
   function updateCamera() {
     if (state.mode !== 'custom') return;
     const camera = state.camera;
     camera.fov = state.fov;
-    camera.aspect = 16 / 9;
+    camera.aspect = sizeRatio();
     camera.near = 0.05;
     camera.far = 4000;
     const horizontal = Math.cos(state.elevation) * state.distance;
@@ -162,6 +215,50 @@ export function openExportDialog(app) {
     camera.lookAt(state.target);
     camera.updateProjectionMatrix();
     camera.updateMatrixWorld();
+  }
+
+  /** La vista previa respeta la proporción elegida (16:9, 9:16, 1:1…). */
+  function syncSizeUI() {
+    const ratio = sizeRatio();
+    const baseW = 640;
+    const baseH = Math.max(160, Math.round(baseW / ratio));
+    if (canvas.width !== baseW || canvas.height !== baseH) {
+      canvas.width = baseW;
+      canvas.height = baseH;
+      try {
+        preview?.renderer.setSize(baseW, baseH, false);
+      } catch {
+        /* el renderer de la vista previa no está disponible */
+      }
+    }
+    if (previewWrap) previewWrap.style.aspectRatio = `${state.width} / ${state.height}`;
+    const badge = body.querySelector('#export-preview-badge');
+    const ratioLabel = `${(state.width / state.height).toFixed(2).replace('.', ',')}:1`;
+    if (badge) badge.textContent = `VISTA PREVIA · ${state.width}×${state.height} (${ratioLabel})`;
+    const info = body.querySelector('#export-preview-info');
+    if (info) info.innerHTML = `<b>${state.width}×${state.height}</b> · ${app.duration.toFixed(2)} s · ${state.fps} fps`;
+    const cardSize = body.querySelector('#export-card-size');
+    if (cardSize) cardSize.textContent = `${state.width}×${state.height}`;
+    const cardFps = body.querySelector('#export-card-fps');
+    if (cardFps) cardFps.textContent = String(state.fps);
+    const widthInput = body.querySelector('#export-width');
+    const heightInput = body.querySelector('#export-height');
+    if (widthInput && document.activeElement !== widthInput && Number(widthInput.value) !== state.width) {
+      widthInput.value = String(state.width);
+    }
+    if (heightInput && document.activeElement !== heightInput && Number(heightInput.value) !== state.height) {
+      heightInput.value = String(state.height);
+    }
+    body.querySelectorAll('[data-size-w]').forEach((button) => {
+      button.classList.toggle('on', Number(button.dataset.sizeW) === state.width && Number(button.dataset.sizeH) === state.height);
+    });
+    if (state.mode === 'scene') {
+      const source = app.objects.get(state.sceneEntryId)?.object;
+      if (source?.isCamera) {
+        source.aspect = ratio;
+        source.updateProjectionMatrix();
+      }
+    }
   }
 
   function applyPreset(id) {
@@ -214,7 +311,7 @@ export function openExportDialog(app) {
         source.updateWorldMatrix(true, false);
         const clone = source.clone();
         source.matrixWorld.decompose(clone.position, clone.quaternion, clone.scale);
-        clone.aspect = 16 / 9;
+        clone.aspect = sizeRatio();
         clone.updateProjectionMatrix();
         clone.updateMatrixWorld();
         return clone;
@@ -234,12 +331,79 @@ export function openExportDialog(app) {
   applyPreset('center');
   syncControls();
 
+  const playButton = body.querySelector('#export-play');
+  const updatePlayButton = () => {
+    if (!playButton) return;
+    playButton.innerHTML = playingHere ? `${icon('pause', 10)} Pausar` : `${icon('play', 10)} Reproducir`;
+    playButton.classList.toggle('primary', playingHere);
+  };
+  const startPreviewPlayback = () => {
+    if (app.currentTime >= app.duration - 0.0001) app.seek(0);
+    app.play();
+    playingHere = true;
+    updatePlayButton();
+  };
+  const stopPreviewPlayback = () => {
+    playingHere = false;
+    app.pause();
+    updatePlayButton();
+    syncSizeUI();
+  };
+  playButton?.addEventListener('click', () => {
+    if (playingHere) stopPreviewPlayback();
+    else startPreviewPlayback();
+  });
+  updatePlayButton();
+
   const frame = () => {
     updateCamera();
     preview?.render(previewCamera());
+    if (playingHere && !app.playing) {
+      playingHere = false;
+      updatePlayButton();
+      syncSizeUI();
+    }
+    if (playingHere) {
+      const info = body.querySelector('#export-preview-info');
+      if (info) info.innerHTML = `<b>${app.currentTime.toFixed(2)} s</b> / ${app.duration.toFixed(2)} s · ${state.fps} fps`;
+    }
     raf = requestAnimationFrame(frame);
   };
   raf = requestAnimationFrame(frame);
+
+  /* --------- Tamaño de render --------- */
+  const widthInput = body.querySelector('#export-width');
+  const heightInput = body.querySelector('#export-height');
+  const clampSize = (value, fallback) => {
+    const n = Math.round(Number(value));
+    if (!Number.isFinite(n) || n < 16) return fallback;
+    return clamp(n, 64, 4096);
+  };
+  widthInput?.addEventListener('change', () => {
+    state.width = clampSize(widthInput.value, state.width);
+    syncSizeUI();
+  });
+  heightInput?.addEventListener('change', () => {
+    state.height = clampSize(heightInput.value, state.height);
+    syncSizeUI();
+  });
+  body.querySelectorAll('[data-size-w]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.width = Number(button.dataset.sizeW);
+      state.height = Number(button.dataset.sizeH);
+      syncSizeUI();
+    });
+  });
+  body.querySelector('#export-swap')?.addEventListener('click', () => {
+    const w = state.width;
+    state.width = state.height;
+    state.height = w;
+    syncSizeUI();
+  });
+  body.querySelector('#export-fps')?.addEventListener('change', (event) => {
+    state.fps = Number(event.target.value) || 30;
+    syncSizeUI();
+  });
 
   select?.addEventListener('change', () => {
     if (select.value === '__custom') {
@@ -330,9 +494,17 @@ export function openExportDialog(app) {
     if (!card) return;
     const kind = card.dataset.export;
     const camera = exportCamera();
+    const options = { camera, width: state.width, height: state.height, fps: state.fps };
+    app.setRenderSize(state.width, state.height);
+    if (state.fps !== app.fps) app.setFPS(state.fps);
+    if (playingHere) {
+      playingHere = false;
+      app.pause();
+    }
     modal.close();
-    if (kind === 'video') exportVideo(app, { camera });
-    else if (kind === 'png') exportPNG(app, { camera });
+    if (kind === 'video') exportVideo(app, options);
+    else if (kind === 'still') exportStill(app, options);
+    else if (kind === 'png') exportPNG(app, options);
     else if (kind === 'glb') exportGLB(app);
     else if (kind === 'project') saveProject(app);
   });
@@ -357,6 +529,7 @@ function chooseVideoMime() {
 
 export async function exportVideo(app, options = {}) {
   const camera = options.camera || null;
+  const { width, height } = resolveOutputSize(app, options);
   const mime = chooseVideoMime();
   if (!mime) {
     toast('Tu navegador no soporta grabación de video. Prueba en Chrome o Edge.', 'error', 5000);
@@ -370,9 +543,20 @@ export async function exportVideo(app, options = {}) {
 
   const originalTime = app.currentTime;
   let cancelled = false;
+  let interrupted = false;
   let recorder = null;
   let audioExport = null;
   let raf = 0;
+
+  // Grabar en tiempo real exige que la pestaña siga visible: si se oculta,
+  // requestAnimationFrame se detiene y el video saldría cortado.
+  const onVisibility = () => {
+    if (document.visibilityState === 'hidden') {
+      interrupted = true;
+      cancelled = true;
+    }
+  };
+  document.addEventListener('visibilitychange', onVisibility);
 
   const progress = showProgress('Exportando video', {
     label: 'Preparando escena…',
@@ -383,7 +567,7 @@ export async function exportVideo(app, options = {}) {
 
   try {
     app.prepareForExport();
-    app.viewport.beginCapture(WIDTH, HEIGHT, camera);
+    app.viewport.beginCapture(width, height, camera);
     const canvas = app.viewport.renderer.domElement;
     const stream = canvas.captureStream(60);
 
@@ -395,7 +579,7 @@ export async function exportVideo(app, options = {}) {
 
     recorder = new MediaRecorder(stream, {
       mimeType: mime,
-      videoBitsPerSecond: 14_000_000,
+      videoBitsPerSecond: Math.round(clamp((width * height) / 150, 2_000_000, 48_000_000)),
       audioBitsPerSecond: 192_000,
     });
     const chunks = [];
@@ -449,7 +633,13 @@ export async function exportVideo(app, options = {}) {
     await stopped;
 
     if (cancelled) {
-      toast('Exportación de video cancelada.', 'info');
+      toast(
+        interrupted
+          ? 'Grabación detenida: mantén esta pestaña visible mientras se exporta el video.'
+          : 'Exportación de video cancelada.',
+        'info',
+        4200,
+      );
     } else {
       const type = mime.includes('mp4') ? 'video/mp4' : 'video/webm';
       const extension = mime.includes('mp4') ? 'mp4' : 'webm';
@@ -462,6 +652,7 @@ export async function exportVideo(app, options = {}) {
     console.error(error);
     toast(error.message || 'No se pudo exportar el video.', 'error', 5000);
   } finally {
+    document.removeEventListener('visibilitychange', onVisibility);
     cancelAnimationFrame(raf);
     try {
       audioExport?.source.stop();
@@ -485,9 +676,11 @@ export async function exportVideo(app, options = {}) {
 
 export async function exportPNG(app, options = {}) {
   const camera = options.camera || null;
+  const { width, height } = resolveOutputSize(app, options);
   await app.waitForAutosave?.();
   const originalTime = app.currentTime;
-  const frames = Math.max(1, Math.round(app.duration * app.fps));
+  const fps = clamp(Math.round(Number(options.fps) || app.fps), 1, 120);
+  const frames = Math.max(1, Math.round(app.duration * fps));
   const progress = showProgress('Exportando secuencia PNG', {
     label: `0 / ${frames} fotogramas`,
     onCancel: () => {},
@@ -495,13 +688,13 @@ export async function exportPNG(app, options = {}) {
 
   try {
     app.prepareForExport();
-    app.viewport.beginCapture(WIDTH, HEIGHT, camera);
+    app.viewport.beginCapture(width, height, camera);
     const canvas = app.viewport.renderer.domElement;
     const zip = new JSZip();
 
     for (let i = 0; i < frames; i += 1) {
       if (progress.cancelled) break;
-      const time = i / app.fps;
+      const time = i / fps;
       app.currentTime = time;
       app.animation.evaluate(time);
       app.viewport.renderOnce();
@@ -537,6 +730,43 @@ export async function exportPNG(app, options = {}) {
 
 function canvasToBlob(canvas) {
   return new Promise((resolve) => canvas.toBlob((blob) => resolve(blob), 'image/png'));
+}
+
+/** Tamaño de salida: el del proyecto, salvo que el diálogo lo cambie. */
+function resolveOutputSize(app, options = {}) {
+  const fallback = app.renderSize || { width: WIDTH, height: HEIGHT };
+  const width = Math.round(clamp(Number(options.width) || fallback.width || WIDTH, 64, 4096));
+  const height = Math.round(clamp(Number(options.height) || fallback.height || HEIGHT, 64, 4096));
+  return { width, height };
+}
+
+/* ============================================================
+   Imagen fija (fotograma actual)
+   ============================================================ */
+
+export async function exportStill(app, options = {}) {
+  const camera = options.camera || null;
+  const { width, height } = resolveOutputSize(app, options);
+  await app.waitForAutosave?.();
+  const originalTime = app.currentTime;
+  const progress = showProgress('Exportando imagen', { label: 'Renderizando fotograma…' });
+  try {
+    app.prepareForExport();
+    app.viewport.beginCapture(width, height, camera);
+    app.animation.evaluate(app.currentTime);
+    app.viewport.renderOnce();
+    const blob = await canvasToBlob(app.viewport.renderer.domElement);
+    if (blob) downloadBlob(blob, `pekita-imagen-${Date.now()}.png`);
+    progress.update(100, 'Listo');
+    toast(`Imagen exportada (${width}×${height}).`, 'success', 3000);
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'No se pudo exportar la imagen.', 'error', 5000);
+  } finally {
+    progress.close();
+    app.finishExport();
+    app.seek(originalTime);
+  }
 }
 
 /* ============================================================
@@ -701,6 +931,18 @@ export async function buildProjectBlob(app, onProgress = () => {}) {
     selectedName: app.selectedEntry?.object?.name || null,
     activeCameraId: app.activeCameraEntry?.id || null,
     activeCameraName: app.activeCameraEntry?.object?.name || null,
+    render: {
+      width: app.renderSize?.width || 1920,
+      height: app.renderSize?.height || 1080,
+    },
+    textures: app.entries
+      .filter((entry) => entry.textureId && app.textures.get(entry.textureId))
+      .map((entry) => ({
+        id: entry.textureId,
+        name: app.textures.get(entry.textureId).name || 'Textura',
+        file: `texture-${entry.textureId}.png`,
+        repeat: entry.textureRepeat ?? 1,
+      })),
     objects: app.entries.map((entry) => ({
       id: entry.id,
       name: entry.object.name,
@@ -709,6 +951,9 @@ export async function buildProjectBlob(app, onProgress = () => {}) {
       visible: entry.visible,
       locked: entry.locked,
       tracks: entry.tracks,
+      textureId: entry.textureId || null,
+      textureRepeat: entry.textureRepeat ?? 1,
+      primitive: entry.primitive ? { kind: entry.primitive.kind, params: entry.primitive.params } : null,
     })),
     audio: app.audio.hasAudio
       ? {
@@ -724,6 +969,7 @@ export async function buildProjectBlob(app, onProgress = () => {}) {
           name: app.background.name,
           fileName: app.background.fileName || 'background.png',
           mime: app.background.mime || 'image/png',
+          presetId: app.background.presetId || null,
         }
       : null,
   };
@@ -736,6 +982,11 @@ export async function buildProjectBlob(app, onProgress = () => {}) {
   }
   if (app.background?.fileBuffer) {
     zip.file(`background/${project.background.fileName}`, app.background.fileBuffer);
+  }
+  for (const texture of project.textures) {
+    const record = app.textures.get(texture.id);
+    if (!record?.dataUrl) continue;
+    zip.file(`textures/${texture.file}`, record.dataUrl.split(',')[1] || '', { base64: true });
   }
   onProgress(78, 'Comprimiendo proyecto…');
   return zip.generateAsync(
@@ -805,6 +1056,20 @@ export async function loadProjectFile(app, file) {
 
     const metaById = new Map((project.objects || []).filter((item) => item.id).map((item) => [item.id, item]));
     const metaByName = new Map((project.objects || []).map((item) => [item.name, item]));
+
+    // Texturas del proyecto: se registran para poder reutilizarlas o editarlas.
+    const textureMeta = new Map((project.textures || []).map((item) => [item.id, item]));
+    for (const [id, meta] of textureMeta) {
+      try {
+        const file = zip.file(`textures/${meta.file}`) || zip.file(meta.file);
+        if (!file) continue;
+        const base64 = await file.async('base64');
+        app.textures.set(id, { id, name: meta.name || 'Textura', dataUrl: `data:image/png;base64,${base64}` });
+      } catch (error) {
+        console.warn('[PEKITA] Textura del proyecto no restaurada', error);
+      }
+    }
+
     for (const entry of app.entries) {
       const pekitaId = entry.object.userData?.pekitaId;
       const meta = (pekitaId && metaById.get(pekitaId)) || metaByName.get(entry.object.name);
@@ -819,8 +1084,24 @@ export async function loadProjectFile(app, file) {
       entry.visible = meta.visible !== false;
       entry.object.visible = entry.visible;
       entry.locked = !!meta.locked;
+      if (meta.primitive?.kind) entry.primitive = { kind: meta.primitive.kind, params: meta.primitive.params || {} };
+      entry.textureRepeat = Number(meta.textureRepeat) || 1;
+      if (meta.textureId && app.textures.has(meta.textureId)) {
+        entry.textureId = meta.textureId;
+        const repeat = entry.textureRepeat;
+        entry.object.traverse((node) => {
+          if (!node.isMesh) return;
+          const apply = (material) => {
+            if (!material?.map) return material;
+            material.map.repeat.set(repeat, repeat);
+            return material;
+          };
+          node.material = Array.isArray(node.material) ? node.material.map(apply) : apply(node.material);
+        });
+      }
     }
 
+    if (project.render) app.setRenderSize(project.render.width, project.render.height);
     app.duration = Number(project.duration) || 8;
     app.fps = Number(project.fps) || 30;
     app.loop = project.loop !== false;
@@ -885,6 +1166,7 @@ export async function loadProjectFile(app, file) {
             name: project.background.name || 'Fondo',
             fileName: project.background.fileName || 'background.png',
             mime: project.background.mime || 'image/png',
+            presetId: project.background.presetId || null,
             silent: true,
           });
         } catch (error) {
@@ -894,7 +1176,12 @@ export async function loadProjectFile(app, file) {
       }
     }
 
+    // El estado recién abierto se convierte en el primer paso del historial:
+    // así Ctrl+Z vuelve a este punto en lugar de encontrarse el historial vacío.
+    const keepExporting = app.exporting;
+    app.exporting = false;
     app.clearHistory();
+    app.exporting = keepExporting;
     app.refreshAll();
     app.timeline?.setPlayhead(app.currentTime);
     app.topbar?.refresh();
