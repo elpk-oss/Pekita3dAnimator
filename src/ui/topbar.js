@@ -45,10 +45,14 @@ export class Topbar {
       {
         label: 'Archivo',
         items: [
+          { label: 'Pantalla principal', icon: 'grid', action: () => app.openHomeScreen({ autosave: true }) },
           { label: 'Nuevo proyecto', icon: 'plus', shortcut: 'Ctrl+N', action: () => app.newProject() },
           { label: 'Importar modelo…', icon: 'upload', shortcut: 'Ctrl+I', action: () => app.triggerImport() },
           { label: 'Importar audio…', icon: 'audio', action: () => app.triggerAudioImport() },
           { label: 'Imagen de fondo…', icon: 'image', action: () => app.triggerBackgroundImport() },
+          { label: 'Importar textura…', icon: 'image', action: () => app.triggerTextureImport() },
+          { sep: true },
+          { label: 'Tamaño de render…', icon: 'expand', action: () => app.openRenderSizeDialog() },
           { sep: true },
           { label: 'Abrir proyecto…', icon: 'folderOpen', shortcut: 'Ctrl+O', action: () => app.triggerOpenProject() },
           { label: 'Guardar proyecto', icon: 'save', shortcut: 'Ctrl+S', action: () => app.saveProject() },
