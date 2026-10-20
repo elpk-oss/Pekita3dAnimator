@@ -1,4 +1,5 @@
 import './style.css';
+import './mobile.css';
 import { App } from './app.js';
 import { loadProjectFile } from './core/exporter.js';
 import { fileExt } from './utils.js';
@@ -6,9 +7,32 @@ import { toast } from './ui/ui.js';
 
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif']);
 
+/**
+ * Decide si arrancar la interfaz de teléfono. Se puede forzar con
+ * `?mobile=1` o `?desktop=1`, y la elección manual se recuerda.
+ */
+function detectMobileMode() {
+  const params = new URLSearchParams(location.search);
+  if (params.get('mobile') === '1') return true;
+  if (params.get('desktop') === '1') return false;
+
+  let stored = null;
+  try {
+    stored = localStorage.getItem('pekita-mobile-view');
+  } catch {
+    stored = null;
+  }
+  if (stored === '1') return true;
+  if (stored === '0') return false;
+
+  const coarsePointer = window.matchMedia?.('(pointer: coarse)')?.matches ?? false;
+  const smallScreen = Math.min(window.innerWidth, window.innerHeight) <= 820;
+  return coarsePointer && smallScreen;
+}
+
 async function boot() {
   try {
-    const app = new App(document.getElementById('app'));
+    const app = new App(document.getElementById('app'), { mobile: detectMobileMode() });
     window.__PEKITA__ = app;
 
     try {
