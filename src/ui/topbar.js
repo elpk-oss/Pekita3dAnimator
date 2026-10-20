@@ -130,6 +130,8 @@ export class Topbar {
         label: 'Ayuda',
         items: [
           { label: 'Atajos de teclado', icon: 'key', action: () => app.openHelp() },
+          { label: app.mobile ? 'Vista de escritorio' : 'Vista móvil (teléfono)', icon: 'target', action: () => app.toggleMobileMode() },
+          { sep: true },
           { label: 'Acerca de PEKITA ANIMATE 3D', icon: 'info', action: () => app.openAbout() },
         ],
       },
