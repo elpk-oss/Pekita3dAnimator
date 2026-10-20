@@ -208,33 +208,20 @@ export async function importFile(app, file, resources = null) {
       }
       break;
     }
-    case 'prisma': {
-      const text = await file.text();
-      let json = null;
-      try {
-        json = JSON.parse(text.replace(/^\uFEFF/, ''));
-      } catch {
-        throw new Error('Prisma 3D: exporta el modelo como .obj o .glb desde la app.');
-      }
-      if (json.elements || json.outliner) {
-        const parsed = parseBBModel(json, resources);
-        object = parsed.group;
-        warnings = warnings.concat(parsed.warnings);
-      } else {
-        throw new Error('Prisma 3D: exporta el modelo como .obj o .glb para importarlo aquí.');
-      }
-      break;
-    }
+    case 'prisma':
+    case 'prism':
     case 'proj':
     case 'projy': {
-      const parsed = await importProjectModel(app, file, resources);
+      const parsed = await importContainerModel(app, file, resources, ext);
       if (parsed.imported) return parsed.imported;
       object = parsed.object;
       warnings = warnings.concat(parsed.warnings || []);
       break;
     }
     default:
-      throw new Error(`Formato .${ext || '?'} no soportado. Usa GLB, GLTF, OBJ, FBX, STL, PLY, DAE, 3MF, BBModel o PROJ.`);
+      throw new Error(
+        `Formato .${ext || '?'} no soportado. Usa GLB, GLTF, OBJ, FBX, STL, PLY, DAE, 3MF, BBModel, Prisma (.prism/.prisma) o PROJ.`,
+      );
   }
 
   if (!object) throw new Error('No se pudo crear el objeto 3D.');
@@ -245,87 +232,378 @@ export async function importFile(app, file, resources = null) {
   return { entry, object, warnings, name: displayName };
 }
 
-async function importProjectModel(app, file, resources = null) {
+const CONTAINER_LABELS = { prism: 'Prisma 3D', prisma: 'Prisma 3D', proj: 'PROJ', projy: 'PROJ' };
+
+function containerLabel(ext) {
+  return CONTAINER_LABELS[ext] || 'El archivo';
+}
+
+/**
+ * Importa proyectos propietarios o contenedores de otras apps (Prisma 3D,
+ * Prisma/Beepbox, PROJ, PROJY…). Prueba, en este orden:
+ *   1. ZIP (busca GLB/glTF/OBJ/FBX/BBModel/JSON dentro)
+ *   2. JSON (BBModel, glTF o escena genérica)
+ *   3. GLB binario completo
+ *   4. GLB incrustado dentro de un binario
+ *   5. Malla OBJ incrustada como texto dentro de un binario
+ */
+async function importContainerModel(app, file, resources = null, ext = '') {
   const buffer = await file.arrayBuffer();
-  let zip = null;
+  const label = containerLabel(ext);
+  const diagnostics = [];
+
+  if (isZipBuffer(buffer)) {
+    const zipped = await importZipContainer(app, buffer, resources, diagnostics);
+    if (zipped) return zipped;
+  }
+
+  const text = decodeBytes(buffer);
+  if (looksLikeJsonText(text)) {
+    const parsed = await importJsonContainer(app, text, resources);
+    if (parsed) return parsed;
+  }
+
+  if (isGLBBuffer(buffer)) {
+    const gltf = await parseGLTF(buffer, resources);
+    return {
+      object: gltf.scene,
+      warnings: gltf.animations?.length ? ['El modelo incluye animaciones; se importó en pose estática.'] : [],
+    };
+  }
+
+  const embedded = extractEmbeddedGLB(buffer);
+  if (embedded) {
+    const gltf = await parseGLTF(embedded, resources);
+    return {
+      object: gltf.scene,
+      warnings: ['Se extrajo un modelo GLB incrustado dentro del archivo.'],
+    };
+  }
+
+  const objText = extractEmbeddedOBJ(buffer);
+  if (objText) {
+    const { manager, dispose } = createResourceManager(resources);
+    try {
+      const parsed = new OBJLoader(manager).parse(objText);
+      if (countMeshes(parsed)) {
+        return {
+          object: parsed,
+          warnings: ['Se extrajo una malla OBJ incrustada dentro del archivo.'],
+        };
+      }
+    } catch {
+      /* prueba con el siguiente método */
+    } finally {
+      dispose();
+    }
+  }
+
+  const head = hexPreview(buffer, 24);
+  console.warn(`[PEKITA] ${label}: contenedor no reconocido`, { file: file.name, bytes: buffer.byteLength, head, diagnostics });
+  throw new Error(
+    `${label} no reconocido (${file.name}). Puede usar un formato propietario. ` +
+      'Exporta el modelo desde la app original como OBJ o GLB e impórtalo aquí. Si compartes el archivo, se puede añadir soporte específico.',
+  );
+}
+
+async function importZipContainer(app, buffer, resources, diagnostics) {
+  let zip;
   try {
     zip = await JSZip.loadAsync(buffer);
   } catch {
-    zip = null;
+    return null;
+  }
+  const entries = Object.values(zip.files).filter((entry) => !entry.dir);
+  if (!entries.length) return null;
+  diagnostics.push(`zip(${entries.length})`);
+
+  const projectEntry = entries.find((entry) => /(^|\/)project\.json$/i.test(entry.name));
+  if (projectEntry) {
+    try {
+      const project = JSON.parse((await projectEntry.async('text')).replace(/^\uFEFF/, ''));
+      if (project.format === 'pekita-animate-3d') {
+        throw new Error('Este archivo contiene un proyecto PEKITA. Ábrelo con Archivo → Abrir proyecto (.peki).');
+      }
+    } catch (error) {
+      if (String(error.message).includes('proyecto PEKITA')) throw error;
+    }
   }
 
-  if (zip) {
-    const entries = Object.values(zip.files).filter((entry) => !entry.dir);
-    const projectEntry = entries.find((entry) => /(^|\/)project\.json$/i.test(entry.name));
-    if (projectEntry) {
-      try {
-        const project = JSON.parse((await projectEntry.async('text')).replace(/^\uFEFF/, ''));
-        if (project.format === 'pekita-animate-3d') {
-          throw new Error('Este PROJ contiene un proyecto PEKITA. Ábrelo con Archivo → Abrir proyecto (.peki).');
-        }
-      } catch (error) {
-        if (String(error.message).includes('proyecto PEKITA')) throw error;
-      }
-    }
+  const zipResources = new Map(resources || []);
+  for (const entry of entries) {
+    const name = entry.name.split('/').pop();
+    if (!name) continue;
+    const key = resourceKey(name);
+    if (!key || zipResources.has(key)) continue;
+    const data = await entry.async('uint8array');
+    zipResources.set(key, new File([data], name, { type: mimeForName(name) }));
+  }
 
-    const zipResources = new Map(resources || []);
-    for (const entry of entries) {
-      const name = entry.name.split('/').pop();
-      if (!name) continue;
-      const key = resourceKey(name);
-      if (!key || zipResources.has(key)) continue;
-      const data = await entry.async('uint8array');
-      zipResources.set(key, new File([data], name, { type: mimeForName(name) }));
-    }
+  const modelEntry =
+    entries.find((entry) => /\.glb$/i.test(entry.name)) ||
+    entries.find((entry) => /\.gltf$/i.test(entry.name)) ||
+    entries.find((entry) => /\.bbmodel$/i.test(entry.name)) ||
+    entries.find((entry) => /\.(obj|fbx|stl|ply|dae|3mf)$/i.test(entry.name)) ||
+    entries.find((entry) => /\.(prism|prisma|proj|projy)$/i.test(entry.name));
 
-    const modelEntry =
-      entries.find((entry) => /\.glb$/i.test(entry.name)) ||
-      entries.find((entry) => /\.gltf$/i.test(entry.name)) ||
-      entries.find((entry) => /\.bbmodel$/i.test(entry.name)) ||
-      entries.find((entry) => /\.(obj|fbx|stl|ply|dae|3mf)$/i.test(entry.name));
-
-    if (modelEntry) {
-      const name = modelEntry.name.split('/').pop();
-      const data = await modelEntry.async('uint8array');
-      const modelFile = new File([data], name, { type: mimeForName(name) });
+  if (modelEntry) {
+    const name = modelEntry.name.split('/').pop();
+    const data = await modelEntry.async('uint8array');
+    const modelFile = new File([data], name, { type: mimeForName(name) });
+    try {
       const imported = await importFile(app, modelFile, zipResources);
       return { imported };
+    } catch (error) {
+      diagnostics.push(`nested:${error.message}`);
     }
-
-    for (const entry of entries.filter((item) => /\.json$/i.test(item.name))) {
-      try {
-        const json = JSON.parse((await entry.async('text')).replace(/^\uFEFF/, ''));
-        if (json.elements || json.outliner) {
-          const parsed = parseBBModel(json, zipResources);
-          return { object: parsed.group, warnings: parsed.warnings };
-        }
-      } catch {
-        /* prueba con el siguiente JSON */
-      }
-    }
-
-    throw new Error('El archivo PROJ no contiene un modelo compatible. Si es un proyecto de Prisma 3D, exporta el modelo como OBJ o GLB.');
   }
 
-  const text = new TextDecoder().decode(buffer);
-  let json = null;
+  for (const entry of entries.filter((item) => /\.json$/i.test(item.name))) {
+    try {
+      const raw = (await entry.async('text')).replace(/^\uFEFF/, '');
+      const parsed = await importJsonContainer(app, raw, zipResources);
+      if (parsed) return parsed;
+    } catch {
+      /* prueba con el siguiente JSON */
+    }
+  }
+
+  return null;
+}
+
+async function importJsonContainer(app, text, resources) {
+  let json;
   try {
     json = JSON.parse(text.replace(/^\uFEFF/, ''));
   } catch {
-    throw new Error('PROJ no reconocido. Exporta el modelo como GLB, OBJ o BBModel para importarlo.');
+    return null;
   }
-  if (json.format === 'pekita-animate-3d') {
-    throw new Error('Este PROJ es un proyecto PEKITA. Ábrelo con Archivo → Abrir proyecto (.peki).');
+  if (json?.format === 'pekita-animate-3d') {
+    throw new Error('Este archivo contiene un proyecto PEKITA. Ábrelo con Archivo → Abrir proyecto (.peki).');
   }
-  if (json.elements || json.outliner) {
+  if (json?.elements || json?.outliner) {
     const parsed = parseBBModel(json, resources);
     return { object: parsed.group, warnings: parsed.warnings };
   }
-  if (json.asset?.version) {
+  if (json?.asset?.version) {
     const gltf = await parseGLTF(text, resources);
-    return { object: gltf.scene, warnings: gltf.animations?.length ? ['El modelo incluye animaciones; se importó en pose estática.'] : [] };
+    return {
+      object: gltf.scene,
+      warnings: gltf.animations?.length ? ['El modelo incluye animaciones; se importó en pose estática.'] : [],
+    };
   }
-  throw new Error('PROJ no reconocido. Exporta el modelo como GLB, OBJ o BBModel para importarlo.');
+  return parseGenericSceneJson(json);
+}
+
+/**
+ * Interpreta JSON de escenas genéricas (algunos exports de apps móviles) que
+ * guardan vértices/caras en arrays. No es un formato oficial: es una red de
+ * seguridad para no perder modelos sencillos.
+ */
+function parseGenericSceneJson(json) {
+  if (!json || typeof json !== 'object') return null;
+  const nodes = [];
+  const seen = new Set();
+  const visit = (node, depth = 0) => {
+    if (!node || depth > 6) return;
+    if (Array.isArray(node)) {
+      for (const item of node) visit(item, depth + 1);
+      return;
+    }
+    if (typeof node !== 'object' || seen.has(node)) return;
+    seen.add(node);
+    if (node.vertices || node.positions || node.verts || node.mesh || node.faces || node.indices) nodes.push(node);
+    for (const key of ['scene', 'scenes', 'objects', 'nodes', 'children', 'meshes', 'models', 'parts']) {
+      if (node[key]) visit(node[key], depth + 1);
+    }
+  };
+  visit(json.scene ?? json.scenes ?? json.objects ?? json.models ?? json.nodes ?? json, 0);
+  if (!nodes.length) return null;
+
+  const group = new THREE.Group();
+  group.name = json.name || 'Modelo Prisma';
+  let built = 0;
+  for (const node of nodes) {
+    const geometry = geometryFromJsonNode(node);
+    if (!geometry) continue;
+    const material = new THREE.MeshStandardMaterial({
+      color: colorFromJsonNode(node),
+      roughness: 0.55,
+      metalness: 0.14,
+      side: THREE.DoubleSide,
+    });
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.name = node.name || `Parte ${built + 1}`;
+    const translation = node.translation || node.position || node.pos || node.location;
+    if (Array.isArray(translation) && translation.length >= 3) {
+      mesh.position.set(Number(translation[0]) || 0, Number(translation[1]) || 0, Number(translation[2]) || 0);
+    }
+    const scale = node.scale;
+    if (Array.isArray(scale) && scale.length >= 3) {
+      mesh.scale.set(Number(scale[0]) || 1, Number(scale[1]) || 1, Number(scale[2]) || 1);
+    }
+    group.add(mesh);
+    built += 1;
+  }
+  if (!built) return null;
+  return { object: group, warnings: ['Se interpretó un JSON de escena genérico; revisa escala y materiales.'] };
+}
+
+function geometryFromJsonNode(node) {
+  const source = node.mesh && typeof node.mesh === 'object' ? node.mesh : node;
+  const rawVerts = source.vertices || source.positions || source.verts || source.vertexPositions || node.vertices || node.positions;
+  const points = flattenPoints(rawVerts);
+  if (!points || points.length < 9) return null;
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(points, 3));
+
+  const rawIndices = source.faces || source.indices || source.triangles || node.faces || node.indices;
+  const indices = flattenIndices(rawIndices, points.length / 3);
+  if (indices && indices.length >= 3) geometry.setIndex(indices);
+  else geometry.computeVertexNormals();
+
+  geometry.computeBoundingBox();
+  return geometry;
+}
+
+function flattenPoints(value) {
+  if (!Array.isArray(value) || !value.length) return null;
+  if (typeof value[0] === 'number') return value.map((n) => Number(n) || 0);
+  const flat = [];
+  for (const item of value) {
+    if (Array.isArray(item) && item.length >= 3) {
+      flat.push(Number(item[0]) || 0, Number(item[1]) || 0, Number(item[2]) || 0);
+    } else if (item && typeof item === 'object') {
+      flat.push(Number(item.x ?? item[0]) || 0, Number(item.y ?? item[1]) || 0, Number(item.z ?? item[2]) || 0);
+    } else {
+      return null;
+    }
+  }
+  return flat;
+}
+
+function flattenIndices(value, vertexCount) {
+  if (!Array.isArray(value) || !value.length) return null;
+  const flat = [];
+  const isFlatNumbers = typeof value[0] === 'number';
+  const numbers = [];
+  if (isFlatNumbers) numbers.push(...value);
+  else for (const face of value) {
+    if (Array.isArray(face)) numbers.push(...face);
+    else numbers.push(face);
+  }
+  // Si algún índice alcanza vertexCount, la numeración empieza en 1 (formato OBJ-like).
+  const oneBased = numbers.some((raw) => Math.trunc(Number(raw)) >= vertexCount);
+  for (const raw of numbers) {
+    let n = Math.trunc(Number(raw));
+    if (!Number.isFinite(n)) continue;
+    if (n < 0) n += vertexCount;
+    else if (oneBased) n -= 1;
+    if (n >= 0 && n < vertexCount) flat.push(n);
+  }
+  return flat.length ? flat : null;
+}
+
+function colorFromJsonNode(node) {
+  const raw = node.color ?? node.colour ?? node.material?.color ?? node.materialColor;
+  if (typeof raw === 'number') return new THREE.Color(raw);
+  if (Array.isArray(raw) && raw.length >= 3) {
+    const [r, g, b] = raw.map((n) => Number(n) || 0);
+    const normalized = r > 1 || g > 1 || b > 1 ? [r, g, b] : [r * 255, g * 255, b * 255];
+    return new THREE.Color(
+      `rgb(${Math.round(normalized[0])},${Math.round(normalized[1])},${Math.round(normalized[2])})`,
+    );
+  }
+  if (typeof raw === 'string' && raw.trim()) return new THREE.Color(raw.trim());
+  return new THREE.Color(0xf5c542);
+}
+
+function isZipBuffer(buffer) {
+  if (!buffer || buffer.byteLength < 4) return false;
+  const head = new Uint8Array(buffer, 0, 4);
+  return head[0] === 0x50 && head[1] === 0x4b && (head[2] === 0x03 || head[2] === 0x05 || head[2] === 0x07);
+}
+
+function isGLBBuffer(buffer) {
+  if (!buffer || buffer.byteLength < 12) return false;
+  return new DataView(buffer).getUint32(0, true) === 0x46546c67;
+}
+
+function decodeBytes(buffer) {
+  try {
+    return new TextDecoder('utf-8', { fatal: false }).decode(buffer);
+  } catch {
+    return '';
+  }
+}
+
+function looksLikeJsonText(text) {
+  const trimmed = String(text || '').replace(/^\uFEFF/, '').trimStart();
+  return trimmed.startsWith('{') || trimmed.startsWith('[');
+}
+
+function findAsciiOffset(buffer, needle) {
+  const bytes = new Uint8Array(buffer);
+  const target = [];
+  for (let i = 0; i < needle.length; i += 1) target.push(needle.charCodeAt(i));
+  outer: for (let i = 0; i <= bytes.length - target.length; i += 1) {
+    for (let j = 0; j < target.length; j += 1) {
+      if (bytes[i + j] !== target[j]) continue outer;
+    }
+    return i;
+  }
+  return -1;
+}
+
+function extractEmbeddedGLB(buffer) {
+  const offset = findAsciiOffset(buffer, 'glTF');
+  if (offset < 0 || offset + 12 > buffer.byteLength) return null;
+  const length = new DataView(buffer, offset).getUint32(8, true);
+  if (!Number.isFinite(length) || length < 20 || offset + length > buffer.byteLength) return null;
+  return buffer.slice(offset, offset + length);
+}
+
+function extractEmbeddedOBJ(buffer) {
+  if (buffer.byteLength > 80 * 1024 * 1024) return null;
+  let text = '';
+  try {
+    text = new TextDecoder('latin1').decode(buffer);
+  } catch {
+    return null;
+  }
+  const lines = text.split(/\r?\n/);
+  let start = -1;
+  let end = -1;
+  let vertices = 0;
+  let faces = 0;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (/^\s*v\s+-?[\d.]/.test(line)) {
+      vertices += 1;
+      if (start < 0) start = Math.max(0, i - 1);
+    }
+    if (/^\s*f\s+\d/.test(line)) {
+      faces += 1;
+      end = i;
+    }
+  }
+  if (vertices < 3 || faces < 1) return null;
+  return lines.slice(start, end + 1).join('\n');
+}
+
+function countMeshes(object) {
+  let count = 0;
+  object?.traverse?.((node) => {
+    if (node.isMesh && node.geometry?.attributes?.position) count += 1;
+  });
+  return count;
+}
+
+function hexPreview(buffer, bytes = 16) {
+  if (!buffer) return '';
+  return [...new Uint8Array(buffer, 0, Math.min(bytes, buffer.byteLength))]
+    .map((value) => value.toString(16).padStart(2, '0'))
+    .join(' ');
 }
 
 function mimeForName(name) {
