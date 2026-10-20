@@ -5,15 +5,33 @@ import { AnimationSystem, CHANNELS, createTracks } from './core/animation.js';
 import { AudioSystem } from './core/audio.js';
 import { AutoSaveStore } from './core/autosave.js';
 import { importFiles, importSummary } from './core/importer.js';
-import { buildProjectBlob, exportGLB, exportPNG, exportVideo, loadProjectFile, openExportDialog, saveProject } from './core/exporter.js';
+import { buildProjectBlob, exportGLB, exportPNG, exportStill, exportVideo, loadProjectFile, openExportDialog, saveProject } from './core/exporter.js';
+import { PRIMITIVES, buildPrimitiveGeometry, defaultParams, normalizeParams, primitiveDef, primitiveId } from './core/primitives.js';
+import { MATERIAL_PRESETS } from './core/materials.js';
+import { backgroundPreset, presetImageBuffer } from './core/backgrounds.js';
 import { Topbar } from './ui/topbar.js';
 import { Toolrail } from './ui/toolrail.js';
 import { MobileBar } from './ui/mobilebar.js';
 import { Inspector } from './ui/inspector.js';
 import { Timeline } from './ui/timeline.js';
+import { openHome } from './ui/home.js';
+import { openTextureEditor } from './ui/texture.js';
 import { confirmDialog, openAboutModal, openHelpModal, showModal, toast } from './ui/ui.js';
 import { icon } from './icons.js';
 import { baseName, clamp, deepClone, escapeHtml, fileExt, formatTimecode, h, snapTime, uid } from './utils.js';
+
+const MATERIAL_PRESET_IDS = MATERIAL_PRESETS.map((preset) => preset.id);
+
+/** Clona un objeto para el historial: geometría compartida, materiales propios. */
+function cloneForHistory(object) {
+  const clone = object.clone(true);
+  clone.traverse((node) => {
+    if (!node.isMesh) return;
+    if (Array.isArray(node.material)) node.material = node.material.map((material) => (material ? material.clone() : material));
+    else if (node.material) node.material = node.material.clone();
+  });
+  return clone;
+}
 
 const PALETTE = ['#f5c542', '#5aa2ff', '#5ad68c', '#b18cff', '#ff9f5a', '#54d6d6', '#ff7bb0', '#9bb7ff'];
 const TYPE_ICON = { mesh: 'cube', model: 'layers', group: 'folder', light: 'light', camera: 'camera', audio: 'audio' };
@@ -41,8 +59,14 @@ export class App {
     this._timelineDirty = false;
     this.history = [];
     this.historyIndex = -1;
+    this.historyLimit = 40;
     this.restoringHistory = false;
     this.background = null;
+    this.backgrounds = new Map();
+    this.textures = new Map();
+    this.renderSize = { width: 1920, height: 1080 };
+    this.homeOpen = false;
+    this.homeScreen = null;
     this.autosaveStore = new AutoSaveStore();
     this.autosaveReady = false;
     this.autosaveDirty = false;
@@ -142,6 +166,9 @@ export class App {
       warnings: options.warnings || [],
       modifierState: { wireframe: false, flatShading: false },
       baseGeometry: null,
+      primitive: options.primitive || null,
+      textureId: null,
+      textureRepeat: 1,
     };
     object.name = name;
     object.userData.entryId = entry.id;
@@ -191,18 +218,17 @@ export class App {
   }
 
   addPrimitive(kind, options = {}) {
-    const defs = {
-      box: { name: 'Cubo', color: 0xf5c542, geo: () => new THREE.BoxGeometry(options.size || 1, options.size || 1, options.size || 1), y: (options.size || 1) / 2 },
-      sphere: { name: 'Esfera', color: 0x5aa2ff, geo: () => new THREE.SphereGeometry(0.68, 40, 28), y: 0.68 },
-      plane: { name: 'Plano', color: 0x78889f, geo: () => new THREE.PlaneGeometry(2.4, 2.4), y: 0.012, rotation: [-Math.PI / 2, 0, 0] },
-      cylinder: { name: 'Cilindro', color: 0x5ad68c, geo: () => new THREE.CylinderGeometry(0.6, 0.6, 1.4, 40), y: 0.7 },
-      cone: { name: 'Cono', color: 0xff9f5a, geo: () => new THREE.ConeGeometry(0.72, 1.5, 40), y: 0.75 },
-      torus: { name: 'Toro', color: 0xb18cff, geo: () => new THREE.TorusGeometry(0.7, 0.22, 24, 72), y: 0.95, rotation: [-Math.PI / 2, 0, 0] },
-      empty: { name: 'Vacío', color: 0x9aa7bb, geo: null, y: 0 },
-    };
-    const def = defs[kind] || defs.box;
+    const id = primitiveId(kind);
+    const def = PRIMITIVES[id] || PRIMITIVES.box;
+    const params = normalizeParams(id, {
+      ...defaultParams(id),
+      ...(options.params || {}),
+      ...(options.size != null ? { size: options.size } : {}),
+    });
+    const geometry = buildPrimitiveGeometry(id, params);
+
     let object;
-    if (!def.geo) {
+    if (!geometry) {
       object = new THREE.Group();
     } else {
       const material = new THREE.MeshStandardMaterial({
@@ -210,27 +236,53 @@ export class App {
         roughness: options.roughness ?? 0.4,
         metalness: options.metalness ?? 0.16,
       });
-      object = new THREE.Mesh(def.geo(), material);
+      object = new THREE.Mesh(geometry, material);
       object.castShadow = true;
       object.receiveShadow = true;
       if (def.rotation) object.rotation.set(...def.rotation);
     }
 
-    const position = options.position || [0, def.y, 0];
+    const position = options.position || [0, def.ground(params), 0];
     object.position.set(position[0], position[1], position[2]);
+    if (options.rotation) object.rotation.set(options.rotation[0], options.rotation[1], options.rotation[2]);
     const entry = this.addEntry(object, {
       name: options.name || def.name,
-      type: def.geo ? 'mesh' : 'group',
+      type: geometry ? 'mesh' : 'group',
       color: options.color ? `#${options.color.toString(16).padStart(6, '0')}` : undefined,
     });
+    entry.primitive = geometry ? { kind: id, params } : null;
 
     if (options.select !== false) {
       this.select(entry.id);
-      this.clearHistory();
+      this.commitChange();
       this.refreshAll();
       toast(`${entry.name} añadido.`, 'success', 1600);
     }
     return entry;
+  }
+
+  /** Vuelve a construir la geometría de una pieza con nuevos parámetros. */
+  updatePrimitive(entry = this.selectedEntry, params = {}, options = {}) {
+    if (!entry?.primitive) return false;
+    const id = entry.primitive.kind;
+    const def = primitiveDef(id);
+    if (!def?.build) return false;
+    const next = normalizeParams(id, { ...entry.primitive.params, ...params });
+    const geometry = buildPrimitiveGeometry(id, next);
+    if (!geometry) return false;
+    entry.object.traverse((node) => {
+      if (node.isMesh) node.geometry = geometry;
+    });
+    entry.primitive.params = next;
+    if (options.ground) {
+      // Mantiene la pieza apoyada en el suelo al cambiar el tamaño.
+      entry.object.position.y = def.ground(next);
+    }
+    if (options.syncTransform !== false) this.inspector?.syncTransform();
+    this.viewport?.updateSelectionGeometry();
+    if (options.render !== false) this.inspector?.render();
+    if (options.commit !== false) this.commitChange();
+    return true;
   }
 
   addLight(kind = 'directional', options = {}) {
@@ -280,7 +332,7 @@ export class App {
 
     if (options.select !== false) {
       this.select(entry.id);
-      this.clearHistory();
+      this.commitChange();
       this.refreshAll();
       toast(`${entry.name} añadida.`, 'success', 1600);
     }
@@ -299,7 +351,7 @@ export class App {
 
     if (options.select !== false) {
       this.select(entry.id);
-      this.clearHistory();
+      this.commitChange();
       this.refreshAll();
       toast(`${entry.name} añadida.`, 'success', 1600);
     }
@@ -377,7 +429,7 @@ export class App {
     this.selectedKey = null;
     this.viewport.clearSelectionHelpers();
     this.viewport.transform.detach();
-    this.clearHistory();
+    this.commitChange();
     this.refreshAll();
     toast(`${entry.name} eliminado.`, 'success', 1800);
   }
@@ -431,7 +483,7 @@ export class App {
     }
     const clone = this.cloneEntry(entry);
     this.select(clone.id);
-    this.clearHistory();
+    this.commitChange();
     this.refreshAll();
     toast(`${entry.name} duplicado.`, 'success', 1800);
   }
@@ -460,7 +512,7 @@ export class App {
       return;
     }
     this.select(control.id);
-    this.clearHistory();
+    this.commitChange();
     this.refreshAll();
     toast('Control creado. Anima el control para mover todo el rig.', 'success', 3200);
   }
@@ -477,7 +529,7 @@ export class App {
       toast('No se puede crear un ciclo en la jerarquía.', 'error', 2600);
       return false;
     }
-    this.clearHistory();
+    this.commitChange();
     this.refreshAll();
     toast(`${entry.name} emparentado a ${parent.name}.`, 'success', 2400);
     return true;
@@ -502,7 +554,7 @@ export class App {
     }
     child.parentId = parent.id;
     if (options.commit) {
-      this.clearHistory();
+      this.commitChange();
       this.refreshAll();
     }
     return true;
@@ -517,7 +569,7 @@ export class App {
     this.viewport.scene.updateMatrixWorld(true);
     this.viewport.scene.attach(entry.object);
     entry.parentId = null;
-    this.clearHistory();
+    this.commitChange();
     this.refreshAll();
     toast(`${entry.name} está ahora en la raíz.`, 'success', 2000);
   }
@@ -876,6 +928,83 @@ export class App {
     });
   }
 
+  /** Diálogo rápido para el tamaño de render del proyecto. */
+  openRenderSizeDialog() {
+    const presets = [
+      { label: 'Horizontal', width: 1920, height: 1080 },
+      { label: 'Vertical', width: 1080, height: 1920 },
+      { label: 'Cuadrado', width: 1080, height: 1080 },
+      { label: 'Retrato', width: 1080, height: 1350 },
+      { label: 'HD', width: 1280, height: 720 },
+      { label: '4K', width: 3840, height: 2160 },
+    ];
+    let width = this.renderSize.width;
+    let height = this.renderSize.height;
+    const body = document.createElement('div');
+    body.innerHTML = `
+      <p style="margin-top:0">Este tamaño se usa al exportar imagen y video.</p>
+      <div class="home-sizes compact" id="render-presets">
+        ${presets.map((p) => `<button class="home-size" data-w="${p.width}" data-h="${p.height}"><b>${p.label}</b><span>${p.width}×${p.height}</span></button>`).join('')}
+      </div>
+      <div class="size-row">
+        <input type="number" id="render-width" min="64" max="7680" step="1" value="${width}" />
+        <button class="btn sm" id="render-swap" title="Girar">${icon('repeat', 12)}</button>
+        <input type="number" id="render-height" min="64" max="7680" step="1" value="${height}" />
+      </div>
+      <p class="mod-desc" id="render-hint"></p>
+    `;
+    const widthInput = body.querySelector('#render-width');
+    const heightInput = body.querySelector('#render-height');
+    const hint = body.querySelector('#render-hint');
+    const sync = () => {
+      widthInput.value = String(width);
+      heightInput.value = String(height);
+      hint.textContent = `${width}×${height} px · ${((width * height) / 1e6).toFixed(2)} MP`;
+      body.querySelectorAll('#render-presets .home-size').forEach((button) => {
+        button.classList.toggle('selected', Number(button.dataset.w) === width && Number(button.dataset.h) === height);
+      });
+    };
+    sync();
+    widthInput.addEventListener('change', () => {
+      width = clamp(Math.round(Number(widthInput.value) || width), 64, 7680);
+      sync();
+    });
+    heightInput.addEventListener('change', () => {
+      height = clamp(Math.round(Number(heightInput.value) || height), 64, 7680);
+      sync();
+    });
+    body.querySelector('#render-swap').addEventListener('click', () => {
+      const w = width;
+      width = height;
+      height = w;
+      sync();
+    });
+    body.querySelectorAll('#render-presets .home-size').forEach((button) => {
+      button.addEventListener('click', () => {
+        width = Number(button.dataset.w);
+        height = Number(button.dataset.h);
+        sync();
+      });
+    });
+    showModal({
+      title: 'Tamaño de render',
+      body,
+      wide: true,
+      actions: [
+        { label: 'Cancelar' },
+        {
+          label: 'Aplicar',
+          class: 'primary',
+          onClick: () => {
+            this.setRenderSize(width, height);
+            this.inspector?.render();
+            toast(`Render en ${this.renderSizeLabel}.`, 'success', 2000);
+          },
+        },
+      ],
+    });
+  }
+
   /* ============================================================
      Audio
      ============================================================ */
@@ -941,25 +1070,72 @@ export class App {
       throw error;
     }
     this.clearBackground({ notify: false, schedule: false });
-    this.background = {
+    this.background = this.registerBackground({
+      id: meta.id || uid('bg'),
+      presetId: meta.presetId || null,
       name: meta.name || 'Fondo',
       fileName: meta.fileName || 'background.png',
       mime: meta.mime || blob.type || 'image/png',
       fileBuffer: buffer,
       texture,
       url,
-    };
+    });
     this.viewport?.setBackgroundImage(texture);
     this.inspector?.render();
     this.scheduleAutosave(1200);
     if (!meta.silent) toast('Imagen de fondo añadida.', 'success', 2000);
+    return this.background;
+  }
+
+  /** Guarda el fondo en memoria para poder recuperarlo al deshacer. */
+  registerBackground(record) {
+    this.backgrounds.set(record.id, record);
+    while (this.backgrounds.size > 5) {
+      const oldest = this.backgrounds.keys().next().value;
+      if (oldest === this.background?.id || oldest === record.id) break;
+      const stale = this.backgrounds.get(oldest);
+      if (stale?.url) URL.revokeObjectURL(stale.url);
+      stale?.texture?.dispose?.();
+      this.backgrounds.delete(oldest);
+    }
+    return record;
+  }
+
+  /** Fondos listos para usar (croma, cielo, estudio…). */
+  async setBackgroundPreset(id, options = {}) {
+    if (!id) {
+      this.clearBackground(options.silent ? { notify: false, schedule: true } : undefined);
+      return null;
+    }
+    try {
+      const generated = await presetImageBuffer(id);
+      const record = await this.loadBackgroundArrayBuffer(generated.buffer, {
+        id: generated.id,
+        presetId: generated.presetId,
+        name: generated.name,
+        fileName: generated.fileName,
+        mime: generated.mime,
+        silent: true,
+      });
+      if (!options.silent) toast(`Fondo "${generated.name}" aplicado.`, 'success', 2000);
+      return record;
+    } catch (error) {
+      console.error('[PEKITA] Fondo no generado', error);
+      toast('No se pudo generar el fondo.', 'error', 3000);
+      return null;
+    }
   }
 
   clearBackground(options = {}) {
     const { notify = true, schedule = true } = options;
     if (this.background) {
-      if (this.background.url) URL.revokeObjectURL(this.background.url);
-      this.background.texture?.dispose?.();
+      // El registro conserva la textura para poder volver con Ctrl+Z.
+      if (!this.backgrounds.has(this.background.id)) {
+        if (this.background.url) URL.revokeObjectURL(this.background.url);
+        this.background.texture?.dispose?.();
+      } else if (this.background.url) {
+        // La URL se reutiliza mientras el registro viva.
+      }
       this.background = null;
     }
     this.viewport?.setBackgroundImage(null);
@@ -1030,7 +1206,7 @@ export class App {
   }
 
   scheduleAutosave(delay = 1800) {
-    if (!this.autosaveReady || this.exporting || this.inSetup || this.restoringHistory) return;
+    if (!this.autosaveReady || this.exporting || this.inSetup || this.restoringHistory || this.homeOpen) return;
     this.autosaveDirty = true;
     this.setAutosaveStatus('idle', 'Auto');
     window.clearTimeout(this.autosaveTimer);
@@ -1046,7 +1222,7 @@ export class App {
   }
 
   async autosaveNow(force = false) {
-    if (!this.autosaveReady || this.exporting || this.inSetup || this.restoringHistory) return;
+    if (!this.autosaveReady || this.exporting || this.inSetup || this.restoringHistory || this.homeOpen) return;
     if (this.viewport?.capture) return;
     if (!force && document.querySelector('.export-modal')) return;
     if (this.autosaveSaving) {
@@ -1093,6 +1269,7 @@ export class App {
     const projectInput = document.getElementById('file-project');
     const audioInput = document.getElementById('file-audio');
     const backgroundInput = document.getElementById('file-background');
+    const textureInput = document.getElementById('file-texture');
 
     importInput?.addEventListener('change', async () => {
       const files = [...(importInput.files || [])];
@@ -1120,10 +1297,24 @@ export class App {
       backgroundInput.value = '';
       await this.loadBackgroundFile(file);
     });
+    textureInput?.addEventListener('change', async () => {
+      const file = textureInput.files?.[0];
+      textureInput.value = '';
+      await this.loadTextureFile(file);
+    });
   }
 
   triggerImport() {
     document.getElementById('file-import')?.click();
+  }
+
+  /** Importa una imagen como textura del objeto seleccionado. */
+  triggerTextureImport() {
+    if (!this.selectedEntry) {
+      toast('Selecciona primero una pieza.', 'warn', 2200);
+      return;
+    }
+    document.getElementById('file-texture')?.click();
   }
 
   triggerOpenProject() {
@@ -1143,7 +1334,7 @@ export class App {
         const last = results[results.length - 1].entry;
         this.select(last.id);
         this.viewport.focusEntry(last);
-        this.clearHistory();
+        this.commitChange();
         this.refreshAll();
         toast(importSummary(results.map((r) => ({ name: r.name, warnings: r.warnings }))), 'success', 3200);
       }
@@ -1169,6 +1360,62 @@ export class App {
     confirmDialog('Nuevo proyecto', 'Se eliminarán los objetos y la animación actual. ¿Continuar?', 'Crear proyecto', { danger: true }).then((ok) => {
       if (ok) run();
     });
+  }
+
+  /* ============================================================
+     Proyecto / pantalla principal
+     ============================================================ */
+
+  /** Tamaño de render (imagen y video). */
+  setRenderSize(width, height) {
+    const w = clamp(Math.round(Number(width) || 1920), 64, 7680);
+    const h = clamp(Math.round(Number(height) || 1080), 64, 7680);
+    this.renderSize = { width: w, height: h };
+    return this.renderSize;
+  }
+
+  get renderSizeLabel() {
+    return `${this.renderSize.width}×${this.renderSize.height}`;
+  }
+
+  /** Crea un proyecto nuevo sin preguntar (lo usa la pantalla principal). */
+  startNewProject(options = {}) {
+    const { width, height, fps, duration, empty = false, background = null } = options;
+    if (width && height) this.setRenderSize(width, height);
+    if (Number.isFinite(Number(fps))) this.fps = clamp(Math.round(Number(fps)), 1, 120);
+    if (Number.isFinite(Number(duration))) this.duration = clamp(Number(duration), 0.5, 600);
+    this.clearScene();
+    if (empty) {
+      this.currentTime = 0;
+      this.clearHistory();
+      this.select(null);
+    } else {
+      this.setupDefaultScene();
+    }
+    this.refreshAll();
+    if (background) this.setBackgroundPreset(background);
+    return true;
+  }
+
+  async hasAutosave() {
+    if (!this.autosaveStore.available) return false;
+    try {
+      const record = await this.autosaveStore.load();
+      return record?.blob ? { savedAt: record.savedAt || 0, objects: record.meta?.objects || 0 } : false;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Abre (o reabre) la pantalla principal de inicio. */
+  openHomeScreen(options = {}) {
+    if (this.homeScreen?.node?.isConnected) return this.homeScreen;
+    const instance = openHome(this, {
+      hasAutosave: options.hasAutosave !== false && !!options.autosave,
+      autosaveLabel: options.autosaveLabel || '',
+    });
+    this.homeScreen = instance;
+    return instance;
   }
 
   clearScene() {
@@ -1268,6 +1515,154 @@ export class App {
     }
   }
 
+  /** Aplica un conjunto de propiedades a todos los materiales de la pieza. */
+  applyMaterialPreset(entry = this.selectedEntry, presetId) {
+    const preset = MATERIAL_PRESETS.find((item) => item.id === presetId);
+    if (!entry || !preset) return;
+    const materials = this.materialList(entry);
+    if (!materials.length) {
+      toast('Este objeto no tiene materiales editables.', 'warn', 2200);
+      return;
+    }
+    // Partimos de una base neutra para que un preset no arrastre los valores
+    // del anterior (opacidad, brillo emisivo…).
+    const base = { opacity: 1, transparent: false, emissive: '#000000', emissiveIntensity: 1 };
+    for (const material of materials) {
+      for (const [key, value] of Object.entries(base)) {
+        if (key === 'emissive') material.emissive?.set(value);
+        else material[key] = value;
+      }
+      for (const [key, value] of Object.entries(preset.props)) {
+        if (key === 'color' || key === 'emissive') material[key]?.set(value);
+        else material[key] = value;
+      }
+      material.transparent = (preset.props.opacity ?? 1) < 0.999;
+      material.needsUpdate = true;
+    }
+    this.inspector?.render();
+    this.commitChange();
+    toast(`Material "${preset.name}" aplicado.`, 'success', 1800);
+  }
+
+  /* ============================================================
+     Texturas por objeto
+     ============================================================ */
+
+  registerTexture(dataUrl, name = 'Textura') {
+    const id = uid('tex');
+    const record = { id, name, dataUrl };
+    this.textures.set(id, record);
+    return record;
+  }
+
+  /** Aplica una textura (data URL) al objeto seleccionado. */
+  async applyTexture(dataUrl, name = 'Textura', options = {}) {
+    const entry = options.entry || this.selectedEntry;
+    if (!entry) {
+      toast('Selecciona una pieza para aplicar la textura.', 'warn', 2400);
+      return null;
+    }
+    const meshes = [];
+    entry.object.traverse((node) => {
+      if (node.isMesh) meshes.push(node);
+    });
+    if (!meshes.length) {
+      toast('Este objeto no tiene caras donde pintar.', 'warn', 2400);
+      return null;
+    }
+    let texture;
+    try {
+      texture = await new THREE.TextureLoader().loadAsync(dataUrl);
+    } catch (error) {
+      console.error('[PEKITA] Textura no cargada', error);
+      toast('No se pudo leer la textura.', 'error', 3000);
+      return null;
+    }
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.anisotropy = 4;
+    texture.needsUpdate = true;
+
+    const record = options.record || this.registerTexture(dataUrl, name);
+    const repeat = clamp(Number(options.repeat ?? entry.textureRepeat ?? 1) || 1, 0.05, 24);
+    texture.repeat.set(repeat, repeat);
+    for (const mesh of meshes) {
+      const apply = (material) => {
+        if (!material) return material;
+        const copy = material.clone();
+        copy.map = texture;
+        copy.color?.set('#ffffff');
+        copy.needsUpdate = true;
+        return copy;
+      };
+      mesh.material = Array.isArray(mesh.material) ? mesh.material.map(apply) : apply(mesh.material);
+    }
+    entry.textureId = record.id;
+    entry.textureRepeat = repeat;
+    this.viewport?.updateStats();
+    this.inspector?.render();
+    this.commitChange();
+    if (!options.silent) toast(`Textura "${name}" aplicada.`, 'success', 2200);
+    return record;
+  }
+
+  async loadTextureFile(file, options = {}) {
+    if (!file) return null;
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(reader.error || new Error('No se pudo leer la imagen.'));
+      reader.readAsDataURL(file);
+    });
+    return this.applyTexture(dataUrl, baseName(file.name) || 'Textura', options);
+  }
+
+  /** Repeticiones de la textura (mosaico). */
+  setTextureRepeat(entry = this.selectedEntry, value) {
+    if (!entry?.textureId) return;
+    const repeat = clamp(Number(value) || 1, 0.05, 24);
+    entry.textureRepeat = repeat;
+    for (const mesh of [entry.object, ...(entry.object?.children || [])]) {
+      mesh?.traverse?.((node) => {
+        if (!node.isMesh) return;
+        const list = Array.isArray(node.material) ? node.material : [node.material];
+        for (const material of list) if (material?.map) material.map.repeat.set(repeat, repeat);
+      });
+    }
+    this.commitChange();
+  }
+
+  clearTexture(entry = this.selectedEntry) {
+    if (!entry) return;
+    entry.object?.traverse((node) => {
+      if (!node.isMesh) return;
+      const list = Array.isArray(node.material) ? node.material : [node.material];
+      for (const material of list) {
+        if (!material) continue;
+        material.map = null;
+        material.needsUpdate = true;
+      }
+    });
+    entry.textureId = null;
+    this.inspector?.render();
+    this.commitChange();
+    toast('Textura quitada.', 'info', 1800);
+  }
+
+  /** Abre el editor de texturas y aplica el resultado al objeto actual. */
+  async openTextureEditor() {
+    const entry = this.selectedEntry;
+    if (!entry) {
+      toast('Selecciona una pieza para crear su textura.', 'warn', 2400);
+      return;
+    }
+    const source = entry.textureId ? this.textures.get(entry.textureId)?.dataUrl : null;
+    const dataUrl = await openTextureEditor({ sourceDataUrl: source || '' });
+    if (!dataUrl) return;
+    await this.applyTexture(dataUrl, 'Textura creada');
+  }
+
   setLightProperty(entry, key, value) {
     if (!entry?.object?.isLight) return;
     if (key === 'color') entry.object.color.set(value);
@@ -1345,6 +1740,7 @@ export class App {
     });
     toast('Suavizado aplicado a la geometría.', 'success', 1800);
     this.inspector?.render();
+    this.commitChange();
   }
 
   applyArray(count = 3, offset = 1.2, axis = 'x') {
@@ -1357,7 +1753,7 @@ export class App {
       clone.tracks = createTracks();
       for (const child of this.subtreeEntries(clone)) child.tracks = createTracks();
     }
-    this.clearHistory();
+    this.commitChange();
     this.refreshAll();
     toast(`Array de ${n} objetos aplicado.`, 'success', 2200);
   }
@@ -1376,7 +1772,7 @@ export class App {
     clone.object.position.y = entry.object.position.y;
     clone.object.position.z = entry.object.position.z;
     this.select(clone.id);
-    this.clearHistory();
+    this.commitChange();
     this.refreshAll();
     toast(`Espejo en ${axis.toUpperCase()} aplicado.`, 'success', 2000);
   }
@@ -1386,20 +1782,38 @@ export class App {
      ============================================================ */
 
   serializeState() {
+    // Las instantáneas guardan una copia del árbol 3D (geometría compartida,
+    // materiales propios) más los metadatos de cada entrada, así que deshacer
+    // funciona con objetos nuevos, borrados, materiales, piezas y jerarquía.
+    const roots = this.entries.filter((entry) => !entry.parentId || !this.objects.has(entry.parentId));
     return {
+      version: 2,
+      time: Date.now(),
+      roots: roots.map((entry) => ({ id: entry.id, object: cloneForHistory(entry.object) })),
       objects: this.entries.map((entry) => ({
         id: entry.id,
         name: entry.name,
-        visible: entry.visible,
+        type: entry.type,
         color: entry.color,
+        visible: entry.visible,
         locked: entry.locked,
-        position: entry.object.position.toArray(),
-        rotation: [entry.object.rotation.x, entry.object.rotation.y, entry.object.rotation.z],
-        scale: entry.object.scale.toArray(),
+        parentId: entry.parentId || null,
         tracks: deepClone(entry.tracks),
+        warnings: entry.warnings || [],
+        primitive: entry.primitive ? deepClone(entry.primitive) : null,
+        textureId: entry.textureId || null,
+        textureRepeat: entry.textureRepeat ?? 1,
+        modifierState: deepClone(entry.modifierState || {}),
       })),
       selectedId: this.selectedId,
       currentTime: this.currentTime,
+      duration: this.duration,
+      fps: this.fps,
+      loop: this.loop,
+      autoKey: this.autoKey,
+      activeCameraId: this.activeCameraId,
+      backgroundId: this.background?.id || null,
+      renderSize: { ...this.renderSize },
     };
   }
 
@@ -1408,7 +1822,7 @@ export class App {
     const snapshot = this.serializeState();
     this.history = this.history.slice(0, this.historyIndex + 1);
     this.history.push(snapshot);
-    if (this.history.length > 60) this.history.shift();
+    while (this.history.length > this.historyLimit) this.history.shift();
     this.historyIndex = this.history.length - 1;
     this.topbar?.updateHistory();
   }
@@ -1427,42 +1841,120 @@ export class App {
 
   applySnapshot(snapshot) {
     if (!snapshot) return;
+    const previousTime = snapshot.currentTime;
     this.restoringHistory = true;
-    for (const data of snapshot.objects) {
-      const entry = this.objects.get(data.id);
-      if (!entry) continue;
-      entry.name = data.name;
-      entry.object.name = data.name;
-      entry.visible = data.visible;
-      entry.object.visible = data.visible;
-      entry.color = data.color;
-      entry.locked = data.locked;
-      entry.object.position.fromArray(data.position);
-      entry.object.rotation.set(data.rotation[0], data.rotation[1], data.rotation[2]);
-      entry.object.scale.fromArray(data.scale);
-      entry.tracks = deepClone(data.tracks);
+    this.pause();
+    try {
+      // 1) Sacar de la escena el estado actual.
+      for (const entry of [...this.entries]) {
+        if (entry.object?.isSpotLight && entry.object.target?.parent) entry.object.target.parent.remove(entry.object.target);
+        if (entry.object?.parent) entry.object.parent.remove(entry.object);
+      }
+      this.viewport.transform?.detach();
+      this.objects.clear();
+
+      // 2) Reconstruir el árbol desde las instantáneas.
+      const scene = this.viewport.scene;
+      const nodeById = new Map();
+      for (const root of snapshot.roots || []) {
+        const object = cloneForHistory(root.object);
+        scene.add(object);
+        object.traverse((node) => {
+          const id = node.userData?.entryId;
+          if (id) nodeById.set(id, node);
+        });
+      }
+
+      // 3) Rehacer las entradas.
+      const entries = [];
+      for (const data of snapshot.objects || []) {
+        const object = nodeById.get(data.id);
+        if (!object) continue;
+        const entry = {
+          id: data.id,
+          name: data.name,
+          type: data.type,
+          object,
+          parentId: data.parentId || null,
+          tracks: deepClone(data.tracks) || createTracks(),
+          color: data.color,
+          visible: data.visible !== false,
+          locked: !!data.locked,
+          warnings: data.warnings || [],
+          modifierState: deepClone(data.modifierState || { wireframe: false, flatShading: false }),
+          baseGeometry: null,
+          primitive: data.primitive ? deepClone(data.primitive) : null,
+          textureId: data.textureId || null,
+          textureRepeat: data.textureRepeat ?? 1,
+        };
+        object.visible = entry.visible;
+        if (object.isSpotLight && object.target) scene.add(object.target);
+        this.objects.set(entry.id, entry);
+        entries.push(entry);
+      }
+      this.entries = entries;
+
+      // 4) Estado global.
+      this.selectedId = this.objects.has(snapshot.selectedId) ? snapshot.selectedId : null;
+      this.selectedKey = null;
+      if (Number.isFinite(snapshot.duration)) this.duration = snapshot.duration;
+      if (Number.isFinite(snapshot.fps)) this.fps = snapshot.fps;
+      this.loop = snapshot.loop !== false;
+      this.autoKey = !!snapshot.autoKey;
+      if (snapshot.renderSize) this.renderSize = { ...snapshot.renderSize };
+      this.activeCameraId = this.objects.has(snapshot.activeCameraId) ? snapshot.activeCameraId : null;
+      this.viewport.setActiveCamera(this.activeCameraEntry?.object || null);
+      this.currentTime = clamp(Number(previousTime) || 0, 0, this.duration);
+      this.animation.evaluate(this.currentTime);
+      this.restoreBackgroundById(snapshot.backgroundId);
+      this.refreshCameraHud();
+    } catch (error) {
+      console.error('[PEKITA] No se pudo restaurar el historial', error);
+    } finally {
+      this.restoringHistory = false;
     }
-    this.selectedId = this.objects.has(snapshot.selectedId) ? snapshot.selectedId : null;
-    this.currentTime = clamp(snapshot.currentTime, 0, this.duration);
-    this.animation.evaluate(this.currentTime);
+    this.viewport.updateStats();
     this.viewport.updateSelection(this.selectedEntry);
     this.timeline?.render();
+    this.timeline?.setPlayhead(this.currentTime);
     this.inspector?.render();
-    this.viewport.updateStats();
-    this.restoringHistory = false;
+    this.topbar?.refresh();
+    this.mobileBar?.update();
     this.topbar?.updateHistory();
   }
 
   undo() {
-    if (this.historyIndex <= 0) return;
+    if (this.historyIndex <= 0) {
+      toast('No hay más cambios que deshacer.', 'info', 1400);
+      return;
+    }
     this.historyIndex -= 1;
     this.applySnapshot(this.history[this.historyIndex]);
   }
 
   redo() {
-    if (this.historyIndex >= this.history.length - 1) return;
+    if (this.historyIndex >= this.history.length - 1) {
+      toast('No hay más cambios que rehacer.', 'info', 1400);
+      return;
+    }
     this.historyIndex += 1;
     this.applySnapshot(this.history[this.historyIndex]);
+  }
+
+  /** Vuelve a poner el fondo que estaba activo en una instantánea. */
+  restoreBackgroundById(id) {
+    const current = this.background;
+    if (!id) {
+      if (current) this.clearBackground({ notify: false, schedule: false });
+      return;
+    }
+    if (current?.id === id) return;
+    const record = this.backgrounds.get(id);
+    if (!record) return;
+    this.clearBackground({ notify: false, schedule: false });
+    this.background = record;
+    this.viewport?.setBackgroundImage(record.texture);
+    this.inspector?.render();
   }
 
   /* ============================================================
@@ -1473,6 +1965,8 @@ export class App {
     window.addEventListener('keydown', (event) => {
       const typing = event.target?.matches?.('input, textarea, select, [contenteditable="true"]');
       if (typing) return;
+      // Con la pantalla principal delante, los atajos del editor no deben actuar.
+      if (this.homeOpen) return;
       if (event.key === 'Escape') {
         if (document.querySelector('.modal-backdrop')) return;
         if (this.activeCameraId) this.exitCameraView();
