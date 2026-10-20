@@ -468,3 +468,136 @@ body.is-mobile .toast {
     max-height: 70dvh;
   }
 }
+
+/* ------------------------------------------------------------
+   Pantalla principal en el teléfono
+   ------------------------------------------------------------ */
+
+body.is-mobile .home {
+  padding: 14px 11px calc(18px + env(safe-area-inset-bottom));
+  align-items: flex-start;
+}
+body.is-mobile .home-inner {
+  width: 100%;
+  padding-top: 4px;
+}
+body.is-mobile .home-brand strong {
+  font-size: 20px;
+}
+body.is-mobile .home-tag {
+  font-size: 11px;
+}
+body.is-mobile .home-columns {
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+body.is-mobile .home-panel {
+  padding: 12px 12px 11px;
+  border-radius: 12px;
+}
+body.is-mobile .home-sizes {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+body.is-mobile .home-size {
+  padding: 10px 9px;
+}
+body.is-mobile .home-size b {
+  font-size: 11.5px;
+}
+body.is-mobile .home-custom input,
+body.is-mobile .size-row input {
+  height: 38px;
+  font-size: 13px;
+}
+body.is-mobile .home-swap,
+body.is-mobile .size-row .btn {
+  height: 38px;
+  width: 40px;
+}
+body.is-mobile .home-bgs {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+body.is-mobile .home-bg img {
+  height: 50px;
+}
+body.is-mobile .home-actions {
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+}
+body.is-mobile .home-btn {
+  width: 100%;
+  height: 46px;
+  justify-content: center;
+  font-size: 13px;
+}
+body.is-mobile .home-foot {
+  font-size: 9.5px;
+}
+
+/* Editor de texturas táctil */
+body.is-mobile .modal.texture-modal {
+  width: 100vw;
+  max-height: 92vh;
+}
+body.is-mobile .tex-layout {
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+body.is-mobile .tex-tools .btn {
+  height: 32px;
+  font-size: 10.5px;
+}
+body.is-mobile .tex-swatches {
+  grid-template-columns: repeat(6, 1fr);
+  gap: 6px;
+}
+body.is-mobile .tex-swatch {
+  height: 30px;
+}
+body.is-mobile .tex-patterns {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+body.is-mobile .tex-pattern span {
+  font-size: 8.5px;
+}
+
+/* Inspector: rejillas algo más amplias al tacto */
+body.is-mobile .tex-quick {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+body.is-mobile .tex-quick-btn {
+  min-height: 34px;
+}
+body.is-mobile .mat-preset {
+  height: 30px;
+  font-size: 9.5px;
+}
+body.is-mobile .bg-thumb img,
+body.is-mobile .bg-thumb span {
+  height: 46px;
+}
+body.is-mobile .export-sizes {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+body.is-mobile .export-camera-col .size-row input {
+  height: 34px;
+  font-size: 12px;
+}
+
+/* Media queries de la pantalla principal */
+@media (max-width: 860px) {
+  .home-columns {
+    grid-template-columns: 1fr;
+  }
+  .home-inner {
+    width: 100%;
+  }
+  .home {
+    padding: 18px 12px;
+    align-items: flex-start;
+  }
+  .tex-layout {
+    grid-template-columns: 1fr;
+  }
+}
