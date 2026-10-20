@@ -935,14 +935,25 @@ export async function buildProjectBlob(app, onProgress = () => {}) {
       width: app.renderSize?.width || 1920,
       height: app.renderSize?.height || 1080,
     },
-    textures: app.entries
-      .filter((entry) => entry.textureId && app.textures.get(entry.textureId))
-      .map((entry) => ({
-        id: entry.textureId,
-        name: app.textures.get(entry.textureId).name || 'Textura',
-        file: `texture-${entry.textureId}.png`,
-        repeat: entry.textureRepeat ?? 1,
-      })),
+    textures: [
+      ...new Map(
+        app.entries
+          .flatMap((entry) => [entry.textureId, entry.normalMapId])
+          .filter((id) => id && app.textures.get(id))
+          .map((id) => {
+            const record = app.textures.get(id);
+            return [
+              id,
+              {
+                id,
+                name: record.name || 'Textura',
+                file: `texture-${id}.png`,
+                repeat: app.entries.find((entry) => entry.textureId === id)?.textureRepeat ?? 1,
+              },
+            ];
+          }),
+      ).values(),
+    ],
     objects: app.entries.map((entry) => ({
       id: entry.id,
       name: entry.object.name,
@@ -953,6 +964,8 @@ export async function buildProjectBlob(app, onProgress = () => {}) {
       tracks: entry.tracks,
       textureId: entry.textureId || null,
       textureRepeat: entry.textureRepeat ?? 1,
+      normalMapId: entry.normalMapId || null,
+      normalScale: entry.normalScale ?? 1,
       primitive: entry.primitive ? { kind: entry.primitive.kind, params: entry.primitive.params } : null,
     })),
     audio: app.audio.hasAudio
@@ -1098,6 +1111,20 @@ export async function loadProjectFile(app, file) {
           };
           node.material = Array.isArray(node.material) ? node.material.map(apply) : apply(node.material);
         });
+      }
+      entry.normalScale = Number(meta.normalScale) || 1;
+      if (meta.normalMapId && app.textures.has(meta.normalMapId)) {
+        const record = app.textures.get(meta.normalMapId);
+        try {
+          await app.applyNormalMap(record.dataUrl, record.name || 'Mapa de normales', {
+            entry,
+            silent: true,
+            scale: entry.normalScale,
+            record,
+          });
+        } catch (error) {
+          console.warn('[PEKITA] Mapa de normales del proyecto no restaurado', error);
+        }
       }
     }
 
