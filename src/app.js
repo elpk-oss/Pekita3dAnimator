@@ -9,6 +9,7 @@ import { buildProjectBlob, exportGLB, exportPNG, exportStill, exportVideo, loadP
 import { PRIMITIVES, buildPrimitiveGeometry, defaultParams, normalizeParams, primitiveDef, primitiveId } from './core/primitives.js';
 import { MATERIAL_PRESETS } from './core/materials.js';
 import { backgroundPreset, presetImageBuffer } from './core/backgrounds.js';
+import { normalMapFromDataUrl } from './core/textures.js';
 import { Topbar } from './ui/topbar.js';
 import { Toolrail } from './ui/toolrail.js';
 import { MobileBar } from './ui/mobilebar.js';
@@ -45,6 +46,8 @@ export class App {
     this.entryCounter = 0;
     this.selectedId = null;
     this.selectedKey = null;
+    this.selectedKeys = [];
+    this.keyClipboard = null;
     this.currentTime = 0;
     this.duration = 8;
     this.fps = 30;
@@ -169,6 +172,8 @@ export class App {
       primitive: options.primitive || null,
       textureId: null,
       textureRepeat: 1,
+      normalMapId: null,
+      normalScale: 1,
     };
     object.name = name;
     object.userData.entryId = entry.id;
@@ -362,6 +367,7 @@ export class App {
     if (id && !this.objects.has(id)) id = null;
     this.selectedId = id || null;
     this.selectedKey = null;
+    this.selectedKeys = [];
     const entry = this.selectedEntry;
     this.viewport?.updateSelection(entry);
     this.inspector?.render();
@@ -372,12 +378,233 @@ export class App {
   selectKey(entryId, time, options = {}) {
     const entry = this.objects.get(entryId);
     if (!entry) return;
+    if (options.additive) {
+      this.toggleKeySelected(entryId, time);
+      return;
+    }
     this.selectedId = entryId;
+    this.selectedKeys = [{ entryId, time }];
     this.selectedKey = { id: entryId, time };
     this.viewport?.updateSelection(entry);
     this.inspector?.render();
     this.timeline?.render();
     if (options.seek !== false) this.seek(time);
+  }
+
+  /* ============================================================
+     Selección múltiple de keyframes
+     ============================================================ */
+
+  isKeySelected(entryId, time) {
+    return this.selectedKeys.some(
+      (item) => item.entryId === entryId && Math.abs(item.time - time) < 0.0006,
+    );
+  }
+
+  /** Deja la selección de keyframes en la lista indicada (sin duplicados). */
+  setKeySelection(list, options = {}) {
+    const seen = new Set();
+    const clean = [];
+    for (const item of list || []) {
+      if (!item || !this.objects.has(item.entryId)) continue;
+      const time = Number(item.time);
+      if (!Number.isFinite(time)) continue;
+      const key = `${item.entryId}@${time.toFixed(4)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      clean.push({ entryId: item.entryId, time });
+    }
+    clean.sort((a, b) => {
+      if (a.entryId !== b.entryId) {
+        const ai = this.entries.findIndex((entry) => entry.id === a.entryId);
+        const bi = this.entries.findIndex((entry) => entry.id === b.entryId);
+        return ai - bi;
+      }
+      return a.time - b.time;
+    });
+    this.selectedKeys = clean;
+    if (clean.length) {
+      const primary = options.primary || clean[0];
+      this.selectedKey = { id: primary.entryId, time: primary.time };
+      this.selectedId = primary.entryId;
+      const entry = this.objects.get(primary.entryId);
+      if (entry) this.viewport?.updateSelection(entry);
+    } else {
+      this.selectedKey = null;
+    }
+    this.timeline?.render();
+    this.inspector?.render();
+    if (options.seek && this.selectedKey) this.seek(this.selectedKey.time);
+  }
+
+  toggleKeySelected(entryId, time) {
+    if (this.isKeySelected(entryId, time)) {
+      this.setKeySelection(
+        this.selectedKeys.filter(
+          (item) => !(item.entryId === entryId && Math.abs(item.time - time) < 0.0006),
+        ),
+      );
+    } else {
+      this.setKeySelection([...this.selectedKeys, { entryId, time }], {
+        primary: { entryId, time },
+      });
+    }
+  }
+
+  /** Selecciona todos los keyframes del objeto activo (o de todos si no hay). */
+  selectAllKeys() {
+    const entries = this.selectedEntry
+      ? [this.selectedEntry]
+      : this.entries.filter((entry) => this.animation.hasAnyKeys(entry));
+    const list = [];
+    for (const entry of entries) {
+      for (const time of this.animation.allTimes(entry)) list.push({ entryId: entry.id, time });
+    }
+    if (!list.length) {
+      toast('No hay keyframes para seleccionar.', 'warn', 1900);
+      return;
+    }
+    this.setKeySelection(list);
+    toast(`${list.length} keyframes seleccionados.`, 'info', 1500);
+  }
+
+  /** Elimina todos los keyframes seleccionados de una vez. */
+  deleteSelectedKeys() {
+    if (!this.selectedKeys.length) return;
+    let removed = 0;
+    for (const { entryId, time } of this.selectedKeys) {
+      const entry = this.objects.get(entryId);
+      if (!entry) continue;
+      removed += this.animation.removeKeyAt(entry, time) ? 1 : 0;
+    }
+    if (!removed) {
+      this.setKeySelection([]);
+      return;
+    }
+    this.animation.evaluate(this.currentTime);
+    this.setKeySelection([]);
+    this.timeline?.render();
+    this.inspector?.render();
+    this.commitChange();
+    toast(`${removed} ${removed === 1 ? 'keyframe eliminado' : 'keyframes eliminados'}.`, 'info', 1500);
+  }
+
+  /** Copia los keyframes seleccionados (valores + easing) al portapapeles interno. */
+  copyKeys() {
+    const items = new Map();
+    let anchor = Infinity;
+    let count = 0;
+    for (const { entryId, time } of this.selectedKeys) {
+      const entry = this.objects.get(entryId);
+      if (!entry) continue;
+      const channels = [];
+      for (const channel of CHANNELS) {
+        const key = (entry.tracks?.[channel]?.keys || []).find(
+          (item) => Math.abs(item.time - time) < 0.0006,
+        );
+        if (!key) continue;
+        channels.push({
+          channel,
+          time: key.time,
+          value: [...key.value],
+          easing: key.easing ? [...key.easing] : null,
+        });
+      }
+      if (!channels.length) continue;
+      anchor = Math.min(anchor, time);
+      count += 1;
+      const bucket = items.get(entryId) || { entryId, name: entry.name, keys: [] };
+      bucket.keys.push(...channels);
+      items.set(entryId, bucket);
+    }
+    if (!count) {
+      toast('Selecciona uno o varios keyframes para copiar.', 'warn', 2200);
+      return false;
+    }
+    this.keyClipboard = { anchor: Number.isFinite(anchor) ? anchor : 0, count, items: [...items.values()] };
+    toast(`${count} ${count === 1 ? 'keyframe copiado' : 'keyframes copiados'}.`, 'success', 1600);
+    return true;
+  }
+
+  /** Pega los keyframes copiados a partir del cabezal de reproducción. */
+  pasteKeys(time = this.currentTime) {
+    const clip = this.keyClipboard;
+    if (!clip || !clip.items?.length) {
+      toast('No hay keyframes copiados (Ctrl+C sobre la línea de tiempo).', 'warn', 2600);
+      return;
+    }
+    this.pause();
+    const base = snapTime(clamp(Number(time) || 0, 0, this.duration), this.fps);
+    const pasted = [];
+    let count = 0;
+    for (const item of clip.items) {
+      const entry = this.objects.get(item.entryId);
+      if (!entry) continue;
+      for (const key of item.keys) {
+        const at = snapTime(
+          clamp(base + (key.time - clip.anchor), 0, this.duration),
+          this.fps,
+        );
+        const added = this.animation.addKey(entry, key.channel, at, [...key.value], key.easing || undefined);
+        if (!added) continue;
+        count += 1;
+        pasted.push({ entryId: entry.id, time: at });
+      }
+    }
+    if (!count) {
+      toast('No se pudo pegar: el objeto original ya no existe.', 'warn', 2600);
+      return;
+    }
+    this.animation.evaluate(base);
+    this.currentTime = base;
+    this.timeline?.setPlayhead(base);
+    this.setKeySelection(pasted);
+    this.timeline?.render();
+    this.inspector?.render();
+    this.commitChange();
+    toast(`${count} ${count === 1 ? 'keyframe pegado' : 'keyframes pegados'}.`, 'success', 1700);
+  }
+
+  /** Prepara el arrastre de varios keyframes a la vez (snapshot de los tracks). */
+  startKeyDrag() {
+    const ids = new Set(this.selectedKeys.map((item) => item.entryId));
+    const tracks = new Map();
+    for (const id of ids) {
+      const entry = this.objects.get(id);
+      if (entry) tracks.set(id, deepClone(entry.tracks));
+    }
+    this._keyDrag = { tracks, keys: this.selectedKeys.map((item) => ({ ...item })) };
+  }
+
+  /** Mueve los keyframes seleccionados `delta` segundos desde el inicio del arrastre. */
+  applyKeyDrag(delta) {
+    const state = this._keyDrag;
+    if (!state) return;
+    for (const [id, tracks] of state.tracks) {
+      const entry = this.objects.get(id);
+      if (entry) entry.tracks = deepClone(tracks);
+    }
+    const moved = [];
+    for (const key of state.keys) {
+      const entry = this.objects.get(key.entryId);
+      if (!entry) continue;
+      const target = snapTime(clamp(key.time + delta, 0, this.duration), this.fps);
+      this.animation.moveKeyAt(entry, key.time, target);
+      moved.push({ entryId: key.entryId, time: target });
+    }
+    this.selectedKeys = moved;
+    this.selectedKey = moved.length ? { id: moved[0].entryId, time: moved[0].time } : null;
+    this.animation.evaluate(this.currentTime);
+    this.timeline?.render();
+  }
+
+  endKeyDrag(commit = true) {
+    if (!this._keyDrag) return;
+    this._keyDrag = null;
+    this.animation.evaluate(this.currentTime);
+    this.timeline?.render();
+    this.inspector?.render();
+    if (commit) this.commitChange();
   }
 
   renameSelected(name) {
@@ -427,6 +654,7 @@ export class App {
     this.entries = this.entries.filter((item) => !ids.includes(item.id));
     this.selectedId = null;
     this.selectedKey = null;
+    this.selectedKeys = [];
     this.viewport.clearSelectionHelpers();
     this.viewport.transform.detach();
     this.commitChange();
@@ -744,6 +972,7 @@ export class App {
     if (!added) return;
     this.selectedId = entry.id;
     this.selectedKey = { id: entry.id, time: at };
+    this.selectedKeys = [{ entryId: entry.id, time: at }];
     this.animation.evaluate(at);
     this.currentTime = at;
     this.timeline?.render();
@@ -765,6 +994,9 @@ export class App {
     if (this.selectedKey && this.selectedKey.id === entryId && Math.abs(this.selectedKey.time - time) < 0.0006) {
       this.selectedKey = null;
     }
+    this.selectedKeys = this.selectedKeys.filter(
+      (item) => !(item.entryId === entryId && Math.abs(item.time - time) < 0.0006),
+    );
     this.animation.evaluate(this.currentTime);
     this.timeline?.render();
     this.inspector?.render();
@@ -779,6 +1011,11 @@ export class App {
     if (Math.abs(target - fromTime) < 0.0001) return;
     this.animation.moveKeyAt(entry, fromTime, target);
     if (this.selectedKey?.id === entryId) this.selectedKey = { id: entryId, time: target };
+    this.selectedKeys = this.selectedKeys.map((item) =>
+      item.entryId === entryId && Math.abs(item.time - fromTime) < 0.0006
+        ? { entryId, time: target }
+        : item,
+    );
     this.currentTime = target;
     this.animation.evaluate(target);
     this.timeline?.render();
@@ -1270,6 +1507,7 @@ export class App {
     const audioInput = document.getElementById('file-audio');
     const backgroundInput = document.getElementById('file-background');
     const textureInput = document.getElementById('file-texture');
+    const normalInput = document.getElementById('file-normal');
 
     importInput?.addEventListener('change', async () => {
       const files = [...(importInput.files || [])];
@@ -1302,6 +1540,11 @@ export class App {
       textureInput.value = '';
       await this.loadTextureFile(file);
     });
+    normalInput?.addEventListener('change', async () => {
+      const file = normalInput.files?.[0];
+      normalInput.value = '';
+      await this.loadNormalMapFile(file);
+    });
   }
 
   triggerImport() {
@@ -1315,6 +1558,15 @@ export class App {
       return;
     }
     document.getElementById('file-texture')?.click();
+  }
+
+  /** Importa una imagen como mapa de normales del objeto seleccionado. */
+  triggerNormalImport() {
+    if (!this.selectedEntry) {
+      toast('Selecciona primero una pieza.', 'warn', 2200);
+      return;
+    }
+    document.getElementById('file-normal')?.click();
   }
 
   triggerOpenProject() {
@@ -1428,6 +1680,7 @@ export class App {
     this.entries = [];
     this.selectedId = null;
     this.selectedKey = null;
+    this.selectedKeys = [];
     this.activeCameraId = null;
     this.currentTime = 0;
     this.playing = false;
@@ -1618,6 +1871,132 @@ export class App {
     return this.applyTexture(dataUrl, baseName(file.name) || 'Textura', options);
   }
 
+  /* ---------- Mapa de normales (relieve sin añadir geometría) ---------- */
+
+  /** Aplica un mapa de normales (data URL) al objeto: importado o generado. */
+  async applyNormalMap(dataUrl, name = 'Mapa de normales', options = {}) {
+    const entry = options.entry || this.selectedEntry;
+    if (!entry) {
+      toast('Selecciona una pieza para aplicarle el mapa de normales.', 'warn', 2400);
+      return null;
+    }
+    const meshes = [];
+    entry.object?.traverse((node) => {
+      if (node.isMesh) meshes.push(node);
+    });
+    if (!meshes.length) {
+      toast('Este objeto no tiene caras donde aplicar el relieve.', 'warn', 2400);
+      return null;
+    }
+    let texture;
+    try {
+      texture = await new THREE.TextureLoader().loadAsync(dataUrl);
+    } catch (error) {
+      console.error('[PEKITA] Mapa de normales no cargado', error);
+      toast('No se pudo leer el mapa de normales.', 'error', 3000);
+      return null;
+    }
+    // Un mapa de normales guarda direcciones, no color: nunca en sRGB.
+    texture.colorSpace = THREE.NoColorSpace;
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.anisotropy = 4;
+    const repeat = clamp(Number(entry.textureRepeat ?? 1) || 1, 0.05, 24);
+    texture.repeat.set(repeat, repeat);
+    texture.needsUpdate = true;
+
+    const record = options.record || this.registerTexture(dataUrl, name);
+    const scale = clamp(Number(options.scale ?? entry.normalScale ?? 1) || 0, 0, 4);
+    for (const mesh of meshes) {
+      const apply = (material) => {
+        if (!material) return material;
+        const copy = material.clone();
+        copy.normalMap = texture;
+        copy.normalScale = new THREE.Vector2(scale, scale);
+        copy.needsUpdate = true;
+        return copy;
+      };
+      mesh.material = Array.isArray(mesh.material) ? mesh.material.map(apply) : apply(mesh.material);
+    }
+    entry.normalMapId = record.id;
+    entry.normalScale = scale;
+    this.inspector?.render();
+    this.commitChange();
+    if (!options.silent) toast(`Mapa de normales aplicado (intensidad ${scale.toFixed(2)}).`, 'success', 2200);
+    return record;
+  }
+
+  async loadNormalMapFile(file, options = {}) {
+    if (!file) return null;
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(reader.error || new Error('No se pudo leer la imagen.'));
+      reader.readAsDataURL(file);
+    });
+    return this.applyNormalMap(dataUrl, baseName(file.name) || 'Mapa de normales', options);
+  }
+
+  /** Crea un mapa de normales a partir de la textura actual (luminancia → relieve). */
+  async generateNormalFromTexture(entry = this.selectedEntry) {
+    if (!entry) {
+      toast('Selecciona una pieza primero.', 'warn', 2200);
+      return null;
+    }
+    const record = entry.textureId ? this.textures.get(entry.textureId) : null;
+    if (!record) {
+      toast('Primero aplica o crea una textura: el relieve sale de su dibujo.', 'warn', 3000);
+      return null;
+    }
+    const baseNameText = record.name || 'Textura';
+    toast('Calculando relieve…', 'info', 1400);
+    try {
+      const dataUrl = await normalMapFromDataUrl(record.dataUrl, { strength: 2.4, max: 512 });
+      return await this.applyNormalMap(dataUrl, `Relieve de ${baseNameText}`, {
+        entry,
+        scale: entry.normalScale ?? 1.6,
+      });
+    } catch (error) {
+      console.error('[PEKITA] No se pudo generar el mapa de normales', error);
+      toast('No se pudo generar el relieve.', 'error', 3000);
+      return null;
+    }
+  }
+
+  /** Intensidad del relieve (0 = plano, 4 = muy marcado). */
+  setNormalScale(entry = this.selectedEntry, value) {
+    if (!entry?.normalMapId) return;
+    const scale = clamp(Number(value) || 0, 0, 4);
+    entry.normalScale = scale;
+    entry.object?.traverse((node) => {
+      if (!node.isMesh) return;
+      const list = Array.isArray(node.material) ? node.material : [node.material];
+      for (const material of list) {
+        if (!material?.normalMap) continue;
+        material.normalScale?.set(scale, scale);
+        material.needsUpdate = true;
+      }
+    });
+  }
+
+  clearNormalMap(entry = this.selectedEntry) {
+    if (!entry) return;
+    entry.object?.traverse((node) => {
+      if (!node.isMesh) return;
+      const list = Array.isArray(node.material) ? node.material : [node.material];
+      for (const material of list) {
+        if (!material) continue;
+        material.normalMap = null;
+        material.normalScale?.set(1, 1);
+        material.needsUpdate = true;
+      }
+    });
+    entry.normalMapId = null;
+    this.inspector?.render();
+    this.commitChange();
+    toast('Mapa de normales quitado.', 'info', 1800);
+  }
+
   /** Repeticiones de la textura (mosaico). */
   setTextureRepeat(entry = this.selectedEntry, value) {
     if (!entry?.textureId) return;
@@ -1627,7 +2006,10 @@ export class App {
       mesh?.traverse?.((node) => {
         if (!node.isMesh) return;
         const list = Array.isArray(node.material) ? node.material : [node.material];
-        for (const material of list) if (material?.map) material.map.repeat.set(repeat, repeat);
+        for (const material of list) {
+          if (material?.map) material.map.repeat.set(repeat, repeat);
+          if (material?.normalMap) material.normalMap.repeat.set(repeat, repeat);
+        }
       });
     }
     this.commitChange();
@@ -1803,6 +2185,8 @@ export class App {
         primitive: entry.primitive ? deepClone(entry.primitive) : null,
         textureId: entry.textureId || null,
         textureRepeat: entry.textureRepeat ?? 1,
+        normalMapId: entry.normalMapId || null,
+        normalScale: entry.normalScale ?? 1,
         modifierState: deepClone(entry.modifierState || {}),
       })),
       selectedId: this.selectedId,
@@ -1886,6 +2270,8 @@ export class App {
           primitive: data.primitive ? deepClone(data.primitive) : null,
           textureId: data.textureId || null,
           textureRepeat: data.textureRepeat ?? 1,
+          normalMapId: data.normalMapId || null,
+          normalScale: data.normalScale ?? 1,
         };
         object.visible = entry.visible;
         if (object.isSpotLight && object.target) scene.add(object.target);
@@ -1897,6 +2283,7 @@ export class App {
       // 4) Estado global.
       this.selectedId = this.objects.has(snapshot.selectedId) ? snapshot.selectedId : null;
       this.selectedKey = null;
+      this.selectedKeys = [];
       if (Number.isFinite(snapshot.duration)) this.duration = snapshot.duration;
       if (Number.isFinite(snapshot.fps)) this.fps = snapshot.fps;
       this.loop = snapshot.loop !== false;
@@ -1970,6 +2357,7 @@ export class App {
       if (event.key === 'Escape') {
         if (document.querySelector('.modal-backdrop')) return;
         if (this.activeCameraId) this.exitCameraView();
+        else if (this.selectedKeys.length > 1) this.setKeySelection(this.selectedKey ? [this.selectedKey] : []);
         else this.select(null);
         return;
       }
@@ -2001,6 +2389,20 @@ export class App {
         } else if (event.code === 'KeyD') {
           event.preventDefault();
           this.duplicateSelected();
+        } else if (event.code === 'KeyC') {
+          // Solo intercepta si hay keyframes seleccionados y no hay texto copiable.
+          if (!this.selectedKeys.length) return;
+          if (String(window.getSelection?.()?.toString() || '').trim()) return;
+          event.preventDefault();
+          this.copyKeys();
+        } else if (event.code === 'KeyV') {
+          if (!this.keyClipboard) return;
+          event.preventDefault();
+          this.pasteKeys();
+        } else if (event.code === 'KeyA') {
+          if (!this.selectedEntry && !this.entries.length) return;
+          event.preventDefault();
+          this.selectAllKeys();
         }
         return;
       }
@@ -2036,7 +2438,8 @@ export class App {
         case 'Delete':
         case 'Backspace':
           event.preventDefault();
-          if (this.selectedKey) this.deleteKeyframe();
+          if (this.selectedKeys.length > 1) this.deleteSelectedKeys();
+          else if (this.selectedKey) this.deleteKeyframe();
           else this.deleteSelected();
           break;
         case 'ArrowLeft':
