@@ -341,9 +341,37 @@ export class Inspector {
               <div class="slider-row"><label>Repetir</label><input type="range" min="0.25" max="8" step="0.25" value="${repeat}" data-texture-repeat /><span class="val">${Number(repeat).toFixed(2)}×</span></div>
               <div class="btn-row"><button class="btn sm" data-action="create-texture">${icon('sparkles', 11)} Editar textura actual</button></div>`
            : '<p class="mod-desc">Sin textura: el color del material se usa tal cual.</p>'
-       }`,
+       }
+       ${this.renderNormalMap(entry, record)}`,
       record ? 'activa' : 'ninguna',
     );
+  }
+
+  /** Mapa de normales: relieve falso sin tocar la geometría. */
+  renderNormalMap(entry, textureRecord) {
+    const normalRecord = entry?.normalMapId ? this.app.textures.get(entry.normalMapId) : null;
+    const scale = Number(entry?.normalScale ?? 1);
+    return `
+      <div class="tex-normal">
+        <div class="tex-normal-head">
+          <b>Mapa de normales</b>
+          <span class="tag">relieve</span>
+        </div>
+        <div class="tex-actions">
+          <button class="btn sm" data-action="import-normal">${icon('upload', 11)} Importar mapa</button>
+          <button class="btn sm" data-action="normal-from-texture" ${textureRecord ? '' : 'disabled'} title="${textureRecord ? 'Genera el relieve a partir de la textura aplicada' : 'Aplica antes una textura'}">${icon('sparkles', 11)} Desde la textura</button>
+        </div>
+        ${
+          normalRecord
+            ? `<div class="tex-current">
+                 <img src="${normalRecord.dataUrl}" alt="" />
+                 <div><b>${escapeHtml(normalRecord.name || 'Mapa de normales')}</b><span>Relieve activo</span></div>
+                 <button class="mini-btn" data-action="clear-normal" title="Quitar mapa de normales">${icon('trash', 11)}</button>
+               </div>
+               <div class="slider-row"><label>Intensidad</label><input type="range" min="0" max="3" step="0.05" value="${scale}" data-normal-scale /><span class="val">${scale.toFixed(2)}</span></div>`
+            : '<p class="mod-desc">Un mapa de normales simula bultos y hendiduras con luz, sin añadir polígonos. Importa un PNG o genéralo desde la textura actual.</p>'
+        }
+      </div>`;
   }
 
   /** Aplica un patrón generado como textura de la pieza. */
@@ -798,6 +826,9 @@ export class Inspector {
         else if (action === 'import-texture') this.app.triggerTextureImport();
         else if (action === 'create-texture') this.app.openTextureEditor();
         else if (action === 'clear-texture') this.app.clearTexture(this.entry);
+        else if (action === 'import-normal') this.app.triggerNormalImport();
+        else if (action === 'normal-from-texture') this.app.generateNormalFromTexture(this.entry);
+        else if (action === 'clear-normal') this.app.clearNormalMap(this.entry);
         else if (action === 'edit-render-size') this.app.openRenderSizeDialog();
         else if (action === 'piece-ground') {
           const def = primitiveDef(this.entry?.primitive?.kind);
@@ -866,6 +897,17 @@ export class Inspector {
         const label = input.parentElement?.querySelector('.val');
         if (label) label.textContent = `${value.toFixed(2)}×`;
         this.app.setTextureRepeat(this.entry, value);
+      });
+      input.addEventListener('change', () => this.app.commitChange());
+    });
+
+    this.body.querySelectorAll('[data-normal-scale]').forEach((input) => {
+      input.addEventListener('input', () => {
+        const value = Number(input.value);
+        if (!Number.isFinite(value)) return;
+        const label = input.parentElement?.querySelector('.val');
+        if (label) label.textContent = value.toFixed(2);
+        this.app.setNormalScale(this.entry, value);
       });
       input.addEventListener('change', () => this.app.commitChange());
     });
